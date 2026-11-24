@@ -52,7 +52,6 @@ struct SickoPoll {
 static std::optional<SickoPoll> sickoActivePoll;
 static std::deque<SickoPoll> sickoPollQueue;
 static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLastPollVote;
-static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLast8BallUse;
 static std::deque<std::string> sickoPollOutputQueue;
 static std::deque<std::string> sickoPollSentMessages;
 static float sickoPollOutputCooldown = 0.f;
@@ -410,14 +409,6 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 
 	if (command == "/8ball") {
 		if (actor == nullptr) return true;
-		const uint32_t playerKey = actor->fields._.NetId;
-		const auto now = std::chrono::steady_clock::now();
-		auto lastUse = sickoLast8BallUse.find(playerKey);
-		if (lastUse != sickoLast8BallUse.end() &&
-			now - lastUse->second < std::chrono::seconds(5)) {
-			return true;
-		}
-		sickoLast8BallUse[playerKey] = now;
 		auto playerData = GetPlayerData(actor);
 		const std::string playerName = playerData == nullptr ? "Jugador" :
 			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(playerData, nullptr)));
