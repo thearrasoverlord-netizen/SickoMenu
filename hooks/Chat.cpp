@@ -333,6 +333,29 @@ static bool SickoExtractJsonString(const std::string& json, const std::string& k
 			case 't': value += '\t'; break;
 			case 'b': value += '\b'; break;
 			case 'f': value += '\f'; break;
+			case 'u': {
+				if (pos + 4 > json.size()) return false;
+				uint32_t cp = 0;
+				for (int n = 0; n < 4; ++n) {
+					char h = json[pos++];
+					cp <<= 4;
+					if (h >= '0' && h <= '9') cp |= h - '0';
+					else if (h >= 'a' && h <= 'f') cp |= h - 'a' + 10;
+					else if (h >= 'A' && h <= 'F') cp |= h - 'A' + 10;
+					else return false;
+				}
+				if (cp <= 0x7F) value += static_cast<char>(cp);
+				else if (cp <= 0x7FF) {
+					value += static_cast<char>(0xC0 | (cp >> 6));
+					value += static_cast<char>(0x80 | (cp & 0x3F));
+				}
+				else {
+					value += static_cast<char>(0xE0 | (cp >> 12));
+					value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+					value += static_cast<char>(0x80 | (cp & 0x3F));
+				}
+				break;
+			}
 			default: value += escaped; break;
 			}
 		}
@@ -475,11 +498,11 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 		auto data = GetPlayerData(localPlayer);
 		auto outfit = data ? GetPlayerOutfit(data) : nullptr;
 		auto client = (InnerNetClient*)((*Game::pAmongUsClient));
-		auto clientData = client ? InnerNetClient_GetClientFromCharacter(client, localPlayer, nullptr) : nullptr;
+		auto clientData = client ? app::InnerNetClient_GetClientFromCharacter(client, localPlayer, nullptr) : nullptr;
 		static const char* colors[] = { "red", "blue", "green", "pink", "orange", "yellow", "black", "white",
 			"purple", "brown", "cyan", "lime", "maroon", "rose", "banana", "gray", "tan", "coral" };
 		std::string color = "unknown";
-		if (outfit && outfit->fields.ColorId >= 0 && outfit->fields.ColorId < static_cast<int>(std::size(colors)))
+		if (outfit && outfit->fields.ColorId >= 0 && outfit->fields.ColorId < static_cast<int>(sizeof(colors) / sizeof(colors[0])))
 			color = colors[outfit->fields.ColorId];
 		std::string device = "Unknown";
 		if (clientData && clientData->fields.PlatformData) {
@@ -1345,7 +1368,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 				"/help", "/h", "/cmds", "/color", "/colour", "/sicko", "/r", "/rules", "/s", "/start", "/end",
 				"/kick", "/kickc", "/ban", "/banc",
 				"/warn", "/w", "/warnc", "/unwarn", "/uw", "/unwarnc", "/checkwarns", "/cw",
-				"/callmeeting", "/endmeeting", "/8ball",
+				"/callmeeting", "/endmeeting", "/8ball", "/tl", "/rnd", "/selfinf",
 			};
 			std::string firstWordLower = strToLower(message.substr(0, message.find(' ')));
 			bool isRecognizedCommand = KNOWN_COMMAND_WORDS.count(firstWordLower) > 0;
