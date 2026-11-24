@@ -87,6 +87,12 @@ static bool IsSickoSocialCommand(const std::string& message) {
 	return commands.count(command) != 0;
 }
 
+static bool IsSicko8BallCommand(const std::string& message) {
+	if (message.empty() || message[0] != '/') return false;
+	size_t end = message.find_first_of(" \t");
+	return strToLower(message.substr(0, end)) == "/8ball";
+}
+
 static void QueueSickoPollMessage(const std::string& message) {
 	if (!message.empty()) sickoPollOutputQueue.push_back(SickoShorten(message, 120));
 }
@@ -1018,6 +1024,15 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 			const bool handled = HandleChatCommand(sourcePlayer, message);
 			if (handled && IsSickoSocialCommand(message)) return;
 		}
+
+		// A non-host client with TheSickMenu can act as the 8-ball responder.
+		// Incoming commands are processed once when they arrive; the reply is sent
+		// as a normal public chat RPC from this modded client.
+		if (!IsHost() && sourcePlayer != nullptr && Game::pLocalPlayer != nullptr &&
+			*Game::pLocalPlayer != nullptr && sourcePlayer != *Game::pLocalPlayer &&
+			IsSicko8BallCommand(message)) {
+			HandleSickoSocialCommand(sourcePlayer, message);
+		}
 		if (State.BetterChatNotifications && __this->fields.state == ChatControllerState__Enum::Closed &&
 			(State.ReadGhostMessages || local->fields.IsDead || !player->fields.IsDead) &&
 			player == ((!State.SafeMode && State.playerToChatAs.has_value()) ?
@@ -1057,7 +1072,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 				"/help", "/h", "/cmds", "/color", "/colour", "/sicko", "/r", "/rules", "/s", "/start", "/end",
 				"/kick", "/kickc", "/ban", "/banc",
 				"/warn", "/w", "/warnc", "/unwarn", "/uw", "/unwarnc", "/checkwarns", "/cw",
-				"/callmeeting", "/endmeeting",
+				"/callmeeting", "/endmeeting", "/8ball",
 			};
 			std::string firstWordLower = strToLower(message.substr(0, message.find(' ')));
 			bool isRecognizedCommand = KNOWN_COMMAND_WORDS.count(firstWordLower) > 0;
