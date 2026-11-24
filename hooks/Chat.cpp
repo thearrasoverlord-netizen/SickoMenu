@@ -447,7 +447,6 @@ float calculateChatNewlineSize(std::string playerName) {
 			i += 4;
 			continue;
 		}
-
 		// Handle newline
 		if (playerName[i] == '\n') {
 			result += maxSize;
@@ -910,7 +909,8 @@ static bool HandleChatCommand(PlayerControl* actor, const std::string& message) 
 		}
 	}
 	else if (cmd == "/unwarn" || cmd == "/unwarnc") {
-		if (PlayerHasPermission(actor, "warn") && !rawArgs.empty()) {			size_t numSpace = rawArgs.find(' ');
+		if (PlayerHasPermission(actor, "warn") && !rawArgs.empty()) {
+			size_t numSpace = rawArgs.find(' ');
 			if (numSpace == std::string::npos) {
 				localWarn("<#aaaaaa><size=-0.24><font=\"Barlow-Regular Masked\"><b>Usage: /unwarn <Name> <WarnNumber> or /unwarnc <Color> <WarnNumber> - use /checkwarns <FriendCode> to see a player's warn numbers</b></font></color>");
 			}
@@ -1368,7 +1368,8 @@ void dChatController_Update(ChatController* __this, MethodInfo* method) {
 		State.MessageSent = true;
 	}
 
-	if (!State.PanicMode && State.AprilFoolsMode && State.RizzUpEveryone && (IsInGame() || IsInLobby()) && (__this->fields.timeSinceLastMessage >= 3.5f || !State.SafeMode)) {		std::vector<std::string> rizzLinesList = { "Do you have some Ohio rizz? Because you just turned my brain into pure jelly!",
+	if (!State.PanicMode && State.AprilFoolsMode && State.RizzUpEveryone && (IsInGame() || IsInLobby()) && (__this->fields.timeSinceLastMessage >= 3.5f || !State.SafeMode)) {
+		std::vector<std::string> rizzLinesList = { "Do you have some Ohio rizz? Because you just turned my brain into pure jelly!",
 			"If beauty were a Skibidi Toilet, you'd be the one everyone’s trying to get next to!", "Is your name Ohio? Because you’re making my heart do the Skibidi!",
 			"Is your aura made of coffee? Because you’re brewing up some strong feelings in me!", "I see dat gyatt and I wanna fanum tax some of dat",
 			"Am I Baby Gronk? Because you can be my Livvy Dunne", "Sup shawty, are you skibidi, because I could use that to my sigma", "Hey shawty, are you skibidi rizz in ohio?",
