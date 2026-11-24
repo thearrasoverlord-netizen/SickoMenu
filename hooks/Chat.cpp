@@ -1986,7 +1986,7 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 
 		// Utility commands are local-only. Their output is sent publicly by this client.
 		if (chatText[0] == '/') {
-			size_t commandEnd = chatText.find_first_of(" \\t");
+			size_t commandEnd = chatText.find_first_of(" \t");
 			std::string command = strToLower(chatText.substr(0, commandEnd));
 			if (command == "/tl" || command == "/rnd" || command == "/selfinf") {
 				HandleSickoSocialCommand(*Game::pLocalPlayer, chatText);
