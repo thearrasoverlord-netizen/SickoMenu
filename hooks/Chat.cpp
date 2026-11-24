@@ -156,7 +156,6 @@ void ResetSickoPollState() {
 	sickoActivePoll.reset();
 	sickoPollQueue.clear();
 	sickoLastPollVote.clear();
-	sickoLast8BallUse.clear();
 	sickoPollOutputQueue.clear();
 	sickoPollSentMessages.clear();
 	sickoPollOutputCooldown = 0.f;
