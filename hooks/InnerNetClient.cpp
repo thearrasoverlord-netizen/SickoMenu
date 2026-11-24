@@ -1990,6 +1990,7 @@ void dInnerNetClient_DisconnectInternal(InnerNetClient* __this, DisconnectReason
         if (__this->fields.GameState == InnerNetClient_GameStates__Enum::Started
             || __this->fields.GameState == InnerNetClient_GameStates__Enum::Joined
             || __this->fields.NetworkMode == NetworkModes__Enum::FreePlay) {
+            ResetSickoPollState();
             onGameEnd();
             State.LastDisconnectReason = reason;
             if (reason == DisconnectReasons__Enum::Banned || reason == DisconnectReasons__Enum::ConnectionLimit || reason == DisconnectReasons__Enum::GameNotFound || reason == DisconnectReasons__Enum::ServerError)
@@ -2010,6 +2011,7 @@ void dInnerNetClient_EnqueueDisconnect(InnerNetClient* __this, DisconnectReasons
             (reasonStr == "Timeout while waiting for player ID assignment" || reasonStr == "Timeout while waiting for player data containers"))
             return;
         State.FollowerCam = nullptr;
+        ResetSickoPollState();
         onGameEnd(); //removed antiban cuz it glitches the game
     }
     catch (...) {
