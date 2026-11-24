@@ -453,7 +453,7 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 				return true;
 			}
 			if (page == 0) {
-				QueueSickoUtilityMessage("/tl <language> \\"text\\" | /tl help <page_num> | Source: AUTO (auto-detect)");
+				QueueSickoUtilityMessage("/tl <language> \"text\" | /tl help <page_num> | Source: AUTO (auto-detect)");
 				return true;
 			}
 			static const std::vector<std::vector<std::string>> languagePages = {
