@@ -384,8 +384,11 @@ static void UpdateSickoUtilityMessages() {
 }
 
 static void StartSickoTranslation(const std::string& language, const std::string& sourceText) {
+	// MyMemory requires two concrete ISO language codes; it does not accept
+	// "autodetect" as the source language. The command's source language is Spanish.
+	const std::string targetLanguage = strToLower(language);
 	const std::string requestPath = "/get?q=" + SickoUrlEncode(sourceText) +
-		"&langpair=autodetect%7C" + SickoUrlEncode(language);
+		"&langpair=es%7C" + SickoUrlEncode(targetLanguage);
 	std::thread([requestPath]() {
 		HINTERNET session = WinHttpOpen(L"TheSickMenu/2.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -453,7 +456,7 @@ static bool HandleSickoUtilityCommand(PlayerControl* actor, const std::string& c
 				return true;
 			}
 			if (page == 0) {
-				QueueSickoUtilityMessage("/tl <language|rnd> \"text\" | /tl help <page_num> | Source: AUTO (auto-detect)");
+				QueueSickoUtilityMessage("/tl <language|rnd> \"text\" | /tl help <page_num> | Source: ES (Spanish)");
 				return true;
 			}
 			static const std::vector<std::vector<std::string>> languagePages = {
