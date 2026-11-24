@@ -431,6 +431,50 @@ static void StartSickoTranslation(const std::string& language, const std::string
 
 static bool HandleSickoUtilityCommand(const std::string& command, const std::string& rawArgs) {
 	if (command == "/tl") {
+		if (strToLower(rawArgs).rfind("help", 0) == 0) {
+			std::istringstream helpInput(rawArgs);
+			std::string helpWord, pageText;
+			helpInput >> helpWord;
+			int page = 0;
+			if (helpInput >> pageText) {
+				try {
+					size_t parsed = 0;
+					page = std::stoi(pageText, &parsed);
+					if (parsed != pageText.size() || page < 0) throw std::invalid_argument("page");
+				}
+				catch (...) {
+					QueueSickoUtilityMessage("Usage: /tl help <page_num>");
+					return true;
+				}
+			}
+			std::string extra;
+			if (helpInput >> extra) {
+				QueueSickoUtilityMessage("Usage: /tl help <page_num>");
+				return true;
+			}
+			if (page == 0) {
+				QueueSickoUtilityMessage("/tl <language> \\"text\\" | /tl help <page_num> | Source: AUTO (auto-detect)");
+				return true;
+			}
+			static const std::vector<std::vector<std::string>> languagePages = {
+				{"ES: Español", "EN: English", "FR: Français", "DE: Deutsch", "IT: Italiano", "PT: Português"},
+				{"JA: Japanese", "KO: Korean", "ZH: Chinese", "RU: Russian", "NL: Dutch", "PL: Polish"},
+				{"AR: Arabic", "HI: Hindi", "TR: Turkish", "UK: Ukrainian", "SV: Swedish", "NO: Norwegian"},
+				{"DA: Danish", "FI: Finnish", "EL: Greek", "HE: Hebrew", "ID: Indonesian", "MS: Malay"},
+				{"TH: Thai", "VI: Vietnamese", "CS: Czech", "HU: Hungarian", "RO: Romanian", "BG: Bulgarian"}
+			};
+			if (static_cast<size_t>(page) > languagePages.size()) {
+				QueueSickoUtilityMessage(std::format("No language codes on page {}. Pages: 1-{}.", page, languagePages.size()));
+				return true;
+			}
+			std::string listing = std::format("TL codes {}/{}: ", page, languagePages.size());
+			for (size_t i = 0; i < languagePages[page - 1].size(); ++i) {
+				if (i) listing += " | ";
+				listing += languagePages[page - 1][i];
+			}
+			QueueSickoUtilityMessage(listing);
+			return true;
+		}
 		size_t languageEnd = rawArgs.find_first_of(" \t");
 		if (languageEnd == std::string::npos) {
 			QueueSickoUtilityMessage("Usage: /tl <language> \"text to translate\"");
