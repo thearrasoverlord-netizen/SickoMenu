@@ -12,12 +12,16 @@
 #include <chrono>
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <deque>
 #include <optional>
 #include <random>
 #include <set>
 #include <unordered_map>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <winhttp.h>
 
 static float copyNotificationTimer = 0.f;
 static bool isTextCut = false;
@@ -82,7 +86,7 @@ static bool IsSickoSocialCommand(const std::string& message) {
 	size_t end = message.find_first_of(" \t");
 	std::string command = strToLower(message.substr(0, end));
 	static const std::set<std::string> commands = {
-		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball"
+		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball", "/tl", "/rnd", "/selfinf"
 	};
 	return commands.count(command) != 0;
 }
@@ -244,6 +248,274 @@ static bool ParseSickoDuration(const std::string& value, int& duration) {
 	catch (...) {
 		return false;
 	}
+}
+
+
+
+// Extra local utility commands. Translation runs off-thread; chat RPCs are
+// queued and sent from ChatController_Update after the HTTP response arrives.
+static std::mutex sickoUtilityMutex;
+static std::deque<std::string> sickoUtilityOutputQueue;
+
+static std::string SickoUrlEncode(const std::string& value) {
+	static const char hex[] = "0123456789ABCDEF";
+	std::string out;
+	for (unsigned char ch : value) {
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~') out += static_cast<char>(ch);
+		else { out += '%'; out += hex[ch >> 4]; out += hex[ch & 15]; }
+	}
+	return out;
+}
+
+static bool SickoContainsEmoji(const std::string& text) {
+	for (size_t i = 0; i < text.size();) {
+		uint32_t cp = static_cast<unsigned char>(text[i++]);
+		if (cp >= 0xF0 && i + 2 < text.size()) {
+			cp = ((cp & 7) << 18) | ((static_cast<unsigned char>(text[i]) & 0x3F) << 12) |
+				((static_cast<unsigned char>(text[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(text[i + 2]) & 0x3F);
+			i += 3;
+		}
+		else if (cp >= 0xE0 && i + 1 < text.size()) {
+			cp = ((cp & 15) << 12) | ((static_cast<unsigned char>(text[i]) & 0x3F) << 6) | (static_cast<unsigned char>(text[i + 1]) & 0x3F);
+			i += 2;
+		}
+		else if (cp >= 0xC0 && i < text.size()) {
+			cp = ((cp & 31) << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+			++i;
+		}
+		if ((cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) ||
+			(cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0x200D || cp == 0x20E3 ||
+			(cp >= 0x1F1E6 && cp <= 0x1F1FF)) return true;
+	}
+	return false;
+}
+
+static std::string SickoJsonString(const std::string& value) {
+	std::string out = "\"";
+	for (unsigned char ch : value) {
+		switch (ch) {
+		case '\"': out += "\\\""; break;
+		case '\\': out += "\\\\"; break;
+		case '\b': out += "\\b"; break;
+		case '\f': out += "\\f"; break;
+		case '\n': out += "\\n"; break;
+		case '\r': out += "\\r"; break;
+		case '\t': out += "\\t"; break;
+		default: if (ch >= 32) out += static_cast<char>(ch); break;
+		}
+	}
+	out += "\"";
+	return out;
+}
+
+static bool SickoExtractJsonString(const std::string& json, const std::string& key, std::string& value) {
+	const std::string token = "\"" + key + "\"";
+	size_t pos = json.find(token);
+	if (pos == std::string::npos) return false;
+	pos = json.find(':', pos + token.size());
+	if (pos == std::string::npos) return false;
+	pos = json.find('"', pos + 1);
+	if (pos == std::string::npos) return false;
+	++pos;
+	value.clear();
+	while (pos < json.size()) {
+		char ch = json[pos++];
+		if (ch == '"') return true;
+		if (ch == '\\' && pos < json.size()) {
+			char escaped = json[pos++];
+			switch (escaped) {
+			case '"': value += '"'; break;
+			case '\\': value += '\\'; break;
+			case '/': value += '/'; break;
+			case 'n': value += '\n'; break;
+			case 'r': value += '\r'; break;
+			case 't': value += '\t'; break;
+			case 'b': value += '\b'; break;
+			case 'f': value += '\f'; break;
+			default: value += escaped; break;
+			}
+		}
+		else value += ch;
+	}
+	return false;
+}
+
+static void QueueSickoUtilityMessage(const std::string& message) {
+	if (message.empty()) return;
+	std::lock_guard<std::mutex> lock(sickoUtilityMutex);
+	sickoUtilityOutputQueue.push_back(SickoShorten(message, 120));
+}
+
+static void UpdateSickoUtilityMessages() {
+	if (Game::pLocalPlayer == nullptr || *Game::pLocalPlayer == nullptr ||
+		(!IsInLobby() && !IsInGame())) return;
+	std::string message;
+	{
+		std::lock_guard<std::mutex> lock(sickoUtilityMutex);
+		if (sickoUtilityOutputQueue.empty()) return;
+		message = std::move(sickoUtilityOutputQueue.front());
+		sickoUtilityOutputQueue.pop_front();
+	}
+	PlayerControl_RpcSendChat(*Game::pLocalPlayer, convert_to_string(message), NULL);
+}
+
+static void StartSickoTranslation(const std::string& language, const std::string& sourceText) {
+	const std::string requestPath = L"/get?q=" + SickoUrlEncode(sourceText) +
+		"&langpair=autodetect%7C" + SickoUrlEncode(language);
+	std::thread([requestPath]() {
+		HINTERNET session = WinHttpOpen(L"TheSickMenu/2.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+		if (!session) { QueueSickoUtilityMessage("Translation failed: HTTP session error."); return; }
+		HINTERNET connection = WinHttpConnect(session, L"api.mymemory.translated.net",
+			INTERNET_DEFAULT_HTTPS_PORT, 0);
+		HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET",
+			std::wstring(requestPath.begin(), requestPath.end()).c_str(), nullptr,
+			WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
+		std::string response;
+		bool ok = request && WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+			WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(request, nullptr);
+		if (ok) {
+			DWORD status = 0, statusSize = sizeof(status);
+			WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
+			ok = status >= 200 && status < 300;
+		}
+		if (ok) {
+			DWORD available = 0;
+			do {
+				available = 0;
+				if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+				std::string chunk(available, '\0');
+				DWORD read = 0;
+				if (!WinHttpReadData(request, chunk.data(), available, &read)) { ok = false; break; }
+				chunk.resize(read);
+				response += chunk;
+				if (response.size() > 1024 * 1024) { ok = false; break; }
+			} while (available > 0);
+		}
+		if (request) WinHttpCloseHandle(request);
+		if (connection) WinHttpCloseHandle(connection);
+		WinHttpCloseHandle(session);
+		std::string translated;
+		if (ok && SickoExtractJsonString(response, "translatedText", translated) && !translated.empty())
+			QueueSickoUtilityMessage(translated);
+		else
+			QueueSickoUtilityMessage("Translation failed: no valid response from the API.");
+	}).detach();
+}
+
+static bool HandleSickoUtilityCommand(const std::string& command, const std::string& rawArgs) {
+	if (command == "/tl") {
+		size_t languageEnd = rawArgs.find_first_of(" \t");
+		if (languageEnd == std::string::npos) {
+			QueueSickoUtilityMessage("Usage: /tl <language> \"text to translate\"");
+			return true;
+		}
+		std::string language = trim(rawArgs.substr(0, languageEnd));
+		std::string quoted = trim(rawArgs.substr(languageEnd + 1));
+		if (language.empty() || quoted.size() < 2 || quoted.front() != '"' || quoted.back() != '"') {
+			QueueSickoUtilityMessage("Usage: /tl <language> \"text to translate\"");
+			return true;
+		}
+		std::string sourceText = quoted.substr(1, quoted.size() - 2);
+		if (sourceText.empty() || sourceText.find('"') != std::string::npos || SickoContainsEmoji(sourceText)) {
+			QueueSickoUtilityMessage("Invalid text: use one quoted string without emojis.");
+			return true;
+		}
+		StartSickoTranslation(language, sourceText);
+		return true;
+	}
+
+	if (command == "/rnd") {
+		static const std::regex pattern(R"(^\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\s+(true|false)$)", std::regex::icase);
+		std::smatch match;
+		if (!std::regex_match(rawArgs, match, pattern)) {
+			QueueSickoUtilityMessage("Usage: /rnd [<X>, <Y>] <true|false>");
+			return true;
+		}
+		try {
+			double x = std::stod(match[1].str()), y = std::stod(match[2].str());
+			if (!std::isfinite(x) || !std::isfinite(y) || x > y ||
+				std::abs(x) > 1000000000.0 || std::abs(y) > 1000000000.0) {
+				QueueSickoUtilityMessage("Invalid range: X must be <= Y and both values must be finite.");
+				return true;
+			}
+			static std::mt19937_64 rng(std::random_device{}());
+			if (strToLower(match[3].str()) == "true") {
+				std::uniform_real_distribution<double> dist(x, y);
+				QueueSickoUtilityMessage(std::format("Random Float {} to {}: {:.6f}", match[1].str(), match[2].str(), dist(rng)));
+			}
+			else {
+				if (std::floor(x) != x || std::floor(y) != y ||
+					x < static_cast<double>((std::numeric_limits<int>::min)()) ||
+					y > static_cast<double>((std::numeric_limits<int>::max)())) {
+					QueueSickoUtilityMessage("Integer mode requires whole-number bounds.");
+					return true;
+				}
+				std::uniform_int_distribution<int> dist(static_cast<int>(x), static_cast<int>(y));
+				QueueSickoUtilityMessage(std::format("Random Int {} to {}: {}", match[1].str(), match[2].str(), dist(rng)));
+			}
+		}
+		catch (...) { QueueSickoUtilityMessage("Invalid random range."); }
+		return true;
+	}
+
+	if (command == "/selfinf") {
+		const std::string mode = strToLower(trim(rawArgs));
+		if (!mode.empty() && mode != "true" && mode != "false") {
+			QueueSickoUtilityMessage("Usage: /selfinf <true|false>");
+			return true;
+		}
+		if (Game::pLocalPlayer == nullptr || *Game::pLocalPlayer == nullptr) {
+			QueueSickoUtilityMessage("Player information is unavailable.");
+			return true;
+		}
+		auto localPlayer = *Game::pLocalPlayer;
+		auto data = GetPlayerData(localPlayer);
+		auto outfit = data ? GetPlayerOutfit(data) : nullptr;
+		auto client = (InnerNetClient*)((*Game::pAmongUsClient));
+		auto clientData = client ? InnerNetClient_GetClientFromCharacter(client, localPlayer, nullptr) : nullptr;
+		static const char* colors[] = { "red", "blue", "green", "pink", "orange", "yellow", "black", "white",
+			"purple", "brown", "cyan", "lime", "maroon", "rose", "banana", "gray", "tan", "coral" };
+		std::string color = "unknown";
+		if (outfit && outfit->fields.ColorId >= 0 && outfit->fields.ColorId < static_cast<int>(std::size(colors)))
+			color = colors[outfit->fields.ColorId];
+		std::string device = "Unknown";
+		if (clientData && clientData->fields.PlatformData) {
+			switch (clientData->fields.PlatformData->fields.Platform) {
+			case Platforms__Enum::StandaloneEpicPC: device = "Epic Games (PC)"; break;
+			case Platforms__Enum::StandaloneSteamPC: device = "Steam (PC)"; break;
+			case Platforms__Enum::StandaloneMac: device = "Mac"; break;
+			case Platforms__Enum::StandaloneWin10: device = "Microsoft Store (PC)"; break;
+			case Platforms__Enum::StandaloneItch: device = "itch.io (PC)"; break;
+			case Platforms__Enum::IPhone: device = "iOS"; break;
+			case Platforms__Enum::Android: device = "Android"; break;
+			case Platforms__Enum::Switch: device = "Nintendo Switch"; break;
+			case Platforms__Enum::Xbox: device = "Xbox"; break;
+			case Platforms__Enum::Playstation: device = "PlayStation"; break;
+			default: break;
+			}
+		}
+		const std::string level = data ? std::to_string(data->fields.PlayerLevel) : "unknown";
+		// The local game's FriendCode field is used only for the invoking player.
+		// If the game/account does not expose it, omit it rather than guessing.
+		std::string friendCode = (data && data->fields.FriendCode) ?
+			convert_from_string(data->fields.FriendCode) : "";
+		if (mode == "true") {
+			std::string json = "{\"player\":{\"device\":" + SickoJsonString(device) +
+				",\"level\":" + SickoJsonString(level) +
+				",\"friendcode\":" + SickoJsonString(friendCode.empty() ? "hidden" : friendCode) +
+				",\"color\":" + SickoJsonString(color) + "}}";
+			QueueSickoUtilityMessage(json);
+		}
+		else {
+			QueueSickoUtilityMessage("Player's info: Device: " + device + ", Lvl: " + level +
+				", FC: " + (friendCode.empty() ? "hidden" : friendCode) + ", ColorEng: " + color);
+		}
+		return true;
+	}
+	return false;
 }
 
 static std::string GenerateSicko8BallAnswer() {
@@ -1176,6 +1448,7 @@ void dChatBubble_SetName(ChatBubble* __this, String* playerName, bool isDead, bo
 void dChatController_Update(ChatController* __this, MethodInfo* method) {
 	if (State.ShowHookLogs) Log.HookDebug("Hook dChatController_Update executed", false);
 	UpdateSickoPolls();
+	UpdateSickoUtilityMessages();
 	auto freeChatField = __this->fields.freeChatField;
 	int length = freeChatField->fields.textArea->fields.text->fields.m_stringLength;
 
@@ -1622,6 +1895,16 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 			if (IsInGame()) State.rpcQueue.push(new RpcForceSickoChat(PlayerSelection(playerToChatAs), chatText.substr(4), true));
 			if (IsInLobby()) State.lobbyRpcQueue.push(new RpcForceSickoChat(PlayerSelection(playerToChatAs), chatText.substr(4), true));
 			return; //we don't want the chat to know we're using "aum"
+		}
+
+		// Utility commands are local-only. Their output is sent publicly by this client.
+		if (chatText[0] == '/') {
+			size_t commandEnd = chatText.find_first_of(" \\t");
+			std::string command = strToLower(chatText.substr(0, commandEnd));
+			if (command == "/tl" || command == "/rnd" || command == "/selfinf") {
+				HandleSickoSocialCommand(*Game::pLocalPlayer, chatText);
+				return;
+			}
 		}
 
 		// /8ball is handled by the player who invokes it, so it works in public
