@@ -258,7 +258,7 @@ static std::string GenerateSicko8BallAnswer() {
 		"Es que alguien como tú hace esas preguntas..."
 	};
 	std::uniform_int_distribution<size_t> distribution(0, answers.size() - 1);
-	return "La bola dice: " + answers[distribution(rng)];
+	return answers[distribution(rng)];
 }
 
 static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& message) {
@@ -419,7 +419,13 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 			return true;
 		}
 		sickoLast8BallUse[playerKey] = now;
-		QueueSickoPollMessage(GenerateSicko8BallAnswer());
+		auto playerData = GetPlayerData(actor);
+		const std::string playerName = playerData == nullptr ? "Jugador" :
+			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(playerData, nullptr)));
+		const std::string question = rawArgs.empty() ? "(sin pregunta)" : SickoSanitizePollText(rawArgs);
+		const std::string answer = GenerateSicko8BallAnswer();
+		QueueSickoPollMessage(std::format("- {} pregunta: {}\\nLa bola magica dice: {}",
+			SickoShorten(playerName, 18), SickoShorten(question, 42), answer));
 		return true;
 	}
 
