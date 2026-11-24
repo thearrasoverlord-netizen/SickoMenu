@@ -424,7 +424,7 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(playerData, nullptr)));
 		const std::string question = rawArgs.empty() ? "(sin pregunta)" : SickoSanitizePollText(rawArgs);
 		const std::string answer = GenerateSicko8BallAnswer();
-		QueueSickoPollMessage(std::format("- {} pregunta: {}\\nLa bola magica dice: {}",
+		QueueSickoPollMessage(std::format("- {} pregunta: {}\nLa bola magica dice: {}",
 			SickoShorten(playerName, 18), SickoShorten(question, 42), answer));
 		return true;
 	}
