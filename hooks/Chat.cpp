@@ -7,6 +7,10 @@
 #include "toasts.hpp"
 #include "console.hpp"
 #include <regex>
+#include <chrono>
+#include <deque>
+#include <random>
+#include <unordered_map>
 
 static float copyNotificationTimer = 0.f;
 static bool isTextCut = false;
@@ -24,6 +28,391 @@ static std::string strToLower(std::string str) {
 		new_str += char(std::tolower(i));
 	}
 	return new_str;
+}
+
+
+// TheSickMenu v2 social chat commands (/startpoll, /poll, /cancelpoll,
+// /clearpolls, /pollqueue and /8ball). Poll state is authoritative on the host.
+struct SickoPoll {
+	std::string question;
+	std::vector<std::string> options;
+	uint8_t creatorId = 0;
+	std::string creatorName;
+	int durationSeconds = 60;
+	std::chrono::steady_clock::time_point endsAt{};
+	std::unordered_map<uint8_t, size_t> votes; // IDs are private; never displayed.
+};
+
+static std::optional<SickoPoll> sickoActivePoll;
+static std::deque<SickoPoll> sickoPollQueue;
+static std::unordered_map<uint8_t, std::chrono::steady_clock::time_point> sickoLastPollVote;
+static std::unordered_map<uint8_t, std::chrono::steady_clock::time_point> sickoLast8BallUse;
+static std::deque<std::string> sickoPollOutputQueue;
+static float sickoPollOutputCooldown = 0.f;
+
+static std::string SickoSanitizePollText(std::string value) {
+	std::string clean;
+	clean.reserve(value.size());
+	for (char c : value) {
+		if (c == '<') clean += '[';
+		else if (c == '>') clean += ']';
+		else if (c == '\n' || c == '\r') clean += ' ';
+		else if (static_cast<unsigned char>(c) >= 32) clean += c;
+	}
+	return trim(clean);
+}
+
+static std::string SickoShorten(std::string value, size_t maxLength) {
+	if (value.size() <= maxLength) return value;
+	if (maxLength <= 3) return value.substr(0, maxLength);
+	return value.substr(0, maxLength - 3) + "...";
+}
+
+static bool IsSickoSocialCommand(const std::string& message) {
+	if (message.empty() || message[0] != '/') return false;
+	size_t end = message.find_first_of(" \t");
+	std::string command = strToLower(message.substr(0, end));
+	static const std::set<std::string> commands = {
+		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball"
+	};
+	return commands.count(command) != 0;
+}
+
+static void QueueSickoPollMessage(const std::string& message) {
+	if (!message.empty()) sickoPollOutputQueue.push_back(SickoShorten(message, 120));
+}
+
+static void QueueSickoPollMessages(const std::vector<std::string>& messages, bool replacePending) {
+	if (replacePending) sickoPollOutputQueue.clear();
+	for (const auto& message : messages) QueueSickoPollMessage(message);
+}
+
+static std::vector<std::string> BuildSickoPollReport(const SickoPoll& poll, bool cancelled, bool live) {
+	std::vector<int> counts(poll.options.size(), 0);
+	for (const auto& vote : poll.votes) {
+		if (vote.second < counts.size()) ++counts[vote.second];
+	}
+	const int totalVotes = static_cast<int>(poll.votes.size());
+	const int highest = counts.empty() ? 0 : *std::max_element(counts.begin(), counts.end());
+	std::vector<std::string> messages;
+	const std::string heading = cancelled ? "🚫 Encuesta cancelada: " :
+		(live ? "📊 En vivo: " : "📊 Encuesta finalizada: ");
+	messages.push_back(heading + SickoShorten(poll.question, 82));
+
+	for (size_t i = 0; i < poll.options.size(); ++i) {
+		const int percentage = totalVotes == 0 ? 0 :
+			static_cast<int>(std::lround((static_cast<double>(counts[i]) * 100.0) / totalVotes));
+		const bool winner = totalVotes > 0 && counts[i] == highest;
+		const char letter = static_cast<char>('A' + i);
+		std::string line = std::format("[{}] {} — {} votos ({}%){}",
+			letter, SickoShorten(poll.options[i], 54), counts[i], percentage, winner ? " 🏆" : "");
+		messages.push_back(line);
+	}
+
+	if (totalVotes == 0) messages.push_back("Sin votos. Total: 0 votos.");
+	else messages.push_back(std::format("Total: {} votos.", totalVotes));
+	return messages;
+}
+
+static void StartNextSickoPoll() {
+	if (sickoActivePoll.has_value() || sickoPollQueue.empty()) return;
+	sickoActivePoll = std::move(sickoPollQueue.front());
+	sickoPollQueue.pop_front();
+	sickoActivePoll->endsAt = std::chrono::steady_clock::now() +
+		std::chrono::seconds(sickoActivePoll->durationSeconds);
+	QueueSickoPollMessage(std::format("📊 Nueva encuesta: {} ({} s)",
+		SickoShorten(sickoActivePoll->question, 78), sickoActivePoll->durationSeconds));
+}
+
+static void FinishSickoPoll(bool cancelled) {
+	if (!sickoActivePoll.has_value()) return;
+	SickoPoll finished = std::move(*sickoActivePoll);
+	sickoActivePoll.reset();
+	QueueSickoPollMessages(BuildSickoPollReport(finished, cancelled, false), true);
+	StartNextSickoPoll();
+}
+
+static void QueueSickoLiveResults() {
+	if (sickoActivePoll.has_value())
+		QueueSickoPollMessages(BuildSickoPollReport(*sickoActivePoll, false, true), true);
+}
+
+static void ResetSickoPollState() {
+	sickoActivePoll.reset();
+	sickoPollQueue.clear();
+	sickoLastPollVote.clear();
+	sickoLast8BallUse.clear();
+	sickoPollOutputQueue.clear();
+	sickoPollOutputCooldown = 0.f;
+}
+
+static void UpdateSickoPolls() {
+	// Only the host owns poll state. Leaving the lobby/game discards it.
+	if (!IsHost()) {
+		ResetSickoPollState();
+		return;
+	}
+
+	if (sickoActivePoll.has_value() &&
+		std::chrono::steady_clock::now() >= sickoActivePoll->endsAt) {
+		FinishSickoPoll(false);
+	}
+	if (!sickoActivePoll.has_value() && !sickoPollQueue.empty())
+		StartNextSickoPoll();
+
+	if (sickoPollOutputCooldown > 0.f)
+		sickoPollOutputCooldown -= Time_get_deltaTime(NULL);
+
+	if (sickoPollOutputCooldown <= 0.f && !sickoPollOutputQueue.empty() &&
+		Game::pLocalPlayer != nullptr && *Game::pLocalPlayer != nullptr &&
+		(IsInLobby() || IsInGame())) {
+		const std::string message = sickoPollOutputQueue.front();
+		sickoPollOutputQueue.pop_front();
+		PlayerControl_RpcSendChat(*Game::pLocalPlayer, convert_to_string(message), NULL);
+		sickoPollOutputCooldown = 3.2f;
+	}
+}
+
+static bool ParseSickoQuotedArguments(const std::string& input,
+	std::vector<std::string>& quoted, std::string& trailing) {
+	size_t i = 0;
+	auto skipSeparators = [&]() {
+		while (i < input.size() && (std::isspace(static_cast<unsigned char>(input[i])) || input[i] == ',')) ++i;
+	};
+
+	skipSeparators();
+	while (i < input.size() && input[i] == '"') {
+		++i;
+		std::string value;
+		bool closed = false;
+		while (i < input.size()) {
+			if (input[i] == '\\' && i + 1 < input.size() && input[i + 1] == '"') {
+				value += '"';
+				i += 2;
+			}
+			else if (input[i] == '"') {
+				++i;
+				closed = true;
+				break;
+			}
+			else {
+				value += input[i++];
+			}
+		}
+		if (!closed) return false;
+		quoted.push_back(value);
+		skipSeparators();
+		if (i < input.size() && input[i] != '"') {
+			trailing = trim(input.substr(i));
+			break;
+		}
+	}
+	return !quoted.empty();
+}
+
+static bool ParseSickoDuration(const std::string& value, int& duration) {
+	if (value.empty()) return false;
+	try {
+		size_t used = 0;
+		int parsed = std::stoi(value, &used);
+		if (used != value.size()) return false;
+		duration = parsed;
+		return true;
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+static std::string GenerateSicko8BallAnswer() {
+	static std::mt19937 rng(static_cast<uint32_t>(
+		std::chrono::steady_clock::now().time_since_epoch().count()));
+	static const std::vector<std::string> openings = {
+		"🎱 La bola mágica dice:", "🔮 El destino responde:",
+		"🧠 Mi análisis profesional dice:", "📡 Señal recibida:",
+		"✨ Las estrellas anuncian:", "🗿 La sabiduría ancestral dice:"
+	};
+	static const std::vector<std::string> answers = {
+		"Sí, sin ninguna duda.", "No cuentes con ello.",
+		"Las señales apuntan a que sí.", "Probablemente.",
+		"Las señales apuntan a que no.", "Pregunta más tarde.",
+		"No puedo revelar eso.", "Todo indica que sí.",
+		"Mi intuición dice que no.", "El universo está confundido.",
+		"Es un misterio para la humanidad.", "La respuesta es un rotundo quizá."
+	};
+	static const std::vector<std::string> endings = {
+		"", "", "", " No preguntes cómo.", " Fuente: créeme.",
+		" El Wi-Fi del destino está lento.", " (100% inventado)."
+	};
+	auto pick = [&](const std::vector<std::string>& values) -> const std::string& {
+		std::uniform_int_distribution<size_t> distribution(0, values.size() - 1);
+		return values[distribution(rng)];
+	};
+	return pick(openings) + " " + pick(answers) + pick(endings);
+}
+
+static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& message) {
+	if (!IsSickoSocialCommand(message)) return false;
+
+	const size_t spacePos = message.find_first_of(" \t");
+	const std::string command = strToLower(message.substr(0, spacePos));
+	const std::string rawArgs = spacePos == std::string::npos ? "" : trim(message.substr(spacePos + 1));
+	const bool actorIsHost = IsHost() && actor != nullptr &&
+		Game::pLocalPlayer != nullptr && actor == *Game::pLocalPlayer;
+
+	if (command == "/startpoll") {
+		if (!actorIsHost) {
+			QueueSickoPollMessage("Solo el anfitrión puede crear encuestas.");
+			return true;
+		}
+
+		std::vector<std::string> quoted;
+		std::string trailing;
+		if (!ParseSickoQuotedArguments(rawArgs, quoted, trailing) ||
+			quoted.size() < 3 || quoted.size() > 5) {
+			QueueSickoPollMessage("Uso: /startpoll \"Pregunta\", \"Opción A\", \"Opción B\" [15-300]");
+			return true;
+		}
+
+		int duration = 60;
+		if (!trailing.empty() && !ParseSickoDuration(trailing, duration)) {
+			QueueSickoPollMessage("Duración inválida. Usa entre 15 y 300 segundos.");
+			return true;
+		}
+		if (duration < 15 || duration > 300) {
+			QueueSickoPollMessage("Duración inválida. Usa entre 15 y 300 segundos.");
+			return true;
+		}
+
+		SickoPoll poll;
+		poll.question = SickoSanitizePollText(quoted.front());
+		poll.durationSeconds = duration;
+		poll.creatorId = actor->fields.PlayerId;
+		auto creatorData = GetPlayerData(actor);
+		poll.creatorName = creatorData == nullptr ? "Host" :
+			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(creatorData, nullptr)));
+		for (size_t i = 1; i < quoted.size(); ++i)
+			poll.options.push_back(SickoSanitizePollText(quoted[i]));
+
+		bool invalidOption = poll.question.empty();
+		for (const auto& option : poll.options) invalidOption = invalidOption || option.empty();
+		if (invalidOption) {
+			QueueSickoPollMessage("La pregunta y todas las opciones deben contener texto.");
+			return true;
+		}
+
+		if (!sickoActivePoll.has_value() && !sickoPollQueue.empty())
+			StartNextSickoPoll();
+
+		if (sickoActivePoll.has_value()) {
+			if (sickoPollQueue.size() >= 3) {
+				QueueSickoPollMessage("Cola llena: máximo 3 encuestas pendientes.");
+				return true;
+			}
+			sickoPollQueue.push_back(std::move(poll));
+			QueueSickoPollMessage(std::format("Encuesta añadida a la cola (#{}).",
+				sickoPollQueue.size()));
+		}
+		else {
+			sickoActivePoll = std::move(poll);
+			sickoActivePoll->endsAt = std::chrono::steady_clock::now() +
+				std::chrono::seconds(sickoActivePoll->durationSeconds);
+			QueueSickoPollMessage(std::format("📊 Nueva encuesta: {} ({} s)",
+				SickoShorten(sickoActivePoll->question, 78), sickoActivePoll->durationSeconds));
+		}
+		return true;
+	}
+
+	if (command == "/poll") {
+		if (!sickoActivePoll.has_value()) {
+			QueueSickoPollMessage("No hay ninguna encuesta activa.");
+			return true;
+		}
+		if (actor == nullptr) return true;
+
+		const std::string choice = strToLower(trim(rawArgs));
+		if (choice.size() != 1) {
+			QueueSickoPollMessage("Uso: /poll A o /poll 1");
+			return true;
+		}
+		int optionIndex = -1;
+		const char token = choice[0];
+		if (token >= 'a' && token <= 'd') optionIndex = token - 'a';
+		else if (token >= '1' && token <= '4') optionIndex = token - '1';
+		if (optionIndex < 0 || optionIndex >= static_cast<int>(sickoActivePoll->options.size())) {
+			QueueSickoPollMessage("Uso: /poll A o /poll 1 (elige una opción válida).");
+			return true;
+		}
+
+		const uint8_t playerId = actor->fields.PlayerId;
+		auto previousVote = sickoActivePoll->votes.find(playerId);
+		if (previousVote != sickoActivePoll->votes.end() &&
+			previousVote->second == static_cast<size_t>(optionIndex)) {
+			return true; // Repeating the same vote produces no response.
+		}
+
+		const auto now = std::chrono::steady_clock::now();
+		auto lastVote = sickoLastPollVote.find(playerId);
+		if (lastVote != sickoLastPollVote.end() &&
+			now - lastVote->second < std::chrono::seconds(5)) {
+			QueueSickoPollMessage("Espera 5 segundos entre votos.");
+			return true;
+		}
+
+		sickoActivePoll->votes[playerId] = static_cast<size_t>(optionIndex);
+		sickoLastPollVote[playerId] = now;
+		QueueSickoLiveResults();
+		return true;
+	}
+
+	if (command == "/pollqueue") {
+		if (sickoPollQueue.empty()) {
+			QueueSickoPollMessage("No hay encuestas pendientes en la cola.");
+			return true;
+		}
+		for (size_t i = 0; i < sickoPollQueue.size(); ++i) {
+			const auto& poll = sickoPollQueue[i];
+			std::string line = std::format("Cola #{}: {} | Por: {}",
+				i + 1, SickoShorten(poll.question, 34), SickoShorten(poll.creatorName, 12));
+			for (size_t j = 0; j < poll.options.size(); ++j) {
+				line += std::format(" {}:{}", static_cast<char>('A' + j),
+					SickoShorten(poll.options[j], 12));
+			}
+			QueueSickoPollMessage(line);
+		}
+		return true;
+	}
+
+	if (command == "/cancelpoll") {
+		if (actorIsHost && sickoActivePoll.has_value())
+			FinishSickoPoll(true);
+		return true;
+	}
+
+	if (command == "/clearpolls") {
+		if (actorIsHost) {
+			const size_t removed = sickoPollQueue.size();
+			sickoPollQueue.clear();
+			QueueSickoPollMessage(std::format("Cola eliminada: {} encuesta(s). La activa continúa.", removed));
+		}
+		return true;
+	}
+
+	if (command == "/8ball") {
+		if (actor == nullptr) return true;
+		const uint8_t playerId = actor->fields.PlayerId;
+		const auto now = std::chrono::steady_clock::now();
+		auto lastUse = sickoLast8BallUse.find(playerId);
+		if (lastUse != sickoLast8BallUse.end() &&
+			now - lastUse->second < std::chrono::seconds(5)) {
+			return true;
+		}
+		sickoLast8BallUse[playerId] = now;
+		QueueSickoPollMessage(GenerateSicko8BallAnswer());
+		return true;
+	}
+
+	return true;
 }
 
 float calculateChatNewlineSize(std::string playerName) {
@@ -340,8 +729,9 @@ static const Settings::ChatPreset* FindChatPresetByName(const std::string& lower
 }
 
 static bool HandleChatCommand(PlayerControl* actor, const std::string& message) {
-	if (!State.Mod_EnableModeration) return false;
 	if (message.empty() || message[0] != '/') return false;
+	if (HandleSickoSocialCommand(actor, message)) return true;
+	if (!State.Mod_EnableModeration) return false;
 	bool isLocal = (actor == *Game::pLocalPlayer);
 
 	std::string lowerMsg = strToLower(message);
@@ -610,7 +1000,8 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 		std::string message = convert_from_string(chatText);
 		std::string newChatText = message;
 		if (IsHost() && sourcePlayer != *Game::pLocalPlayer) {
-			HandleChatCommand(sourcePlayer, message);
+			const bool handled = HandleChatCommand(sourcePlayer, message);
+			if (handled && IsSickoSocialCommand(message)) return;
 		}
 		if (State.BetterChatNotifications && __this->fields.state == ChatControllerState__Enum::Closed &&
 			(State.ReadGhostMessages || local->fields.IsDead || !player->fields.IsDead) &&
@@ -752,6 +1143,7 @@ void dChatBubble_SetName(ChatBubble* __this, String* playerName, bool isDead, bo
 
 void dChatController_Update(ChatController* __this, MethodInfo* method) {
 	if (State.ShowHookLogs) Log.HookDebug("Hook dChatController_Update executed", false);
+	UpdateSickoPolls();
 	auto freeChatField = __this->fields.freeChatField;
 	int length = freeChatField->fields.textArea->fields.text->fields.m_stringLength;
 
