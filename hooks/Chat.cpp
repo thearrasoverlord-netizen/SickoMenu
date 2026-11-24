@@ -1032,6 +1032,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 			*Game::pLocalPlayer != nullptr && sourcePlayer != *Game::pLocalPlayer &&
 			IsSicko8BallCommand(message)) {
 			HandleSickoSocialCommand(sourcePlayer, message);
+			return; // The public reply contains the question; do not display the raw command too.
 		}
 		if (State.BetterChatNotifications && __this->fields.state == ChatControllerState__Enum::Closed &&
 			(State.ReadGhostMessages || local->fields.IsDead || !player->fields.IsDead) &&
