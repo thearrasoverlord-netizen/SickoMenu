@@ -7,10 +7,16 @@
 #include "toasts.hpp"
 #include "console.hpp"
 #include <regex>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cmath>
 #include <deque>
+#include <optional>
 #include <random>
+#include <set>
 #include <unordered_map>
+#include <vector>
 
 static float copyNotificationTimer = 0.f;
 static bool isTextCut = false;
