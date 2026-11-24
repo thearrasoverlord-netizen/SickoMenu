@@ -453,7 +453,7 @@ static bool HandleSickoUtilityCommand(PlayerControl* actor, const std::string& c
 				return true;
 			}
 			if (page == 0) {
-				QueueSickoUtilityMessage("/tl <language> \"text\" | /tl help <page_num> | Source: AUTO (auto-detect)");
+				QueueSickoUtilityMessage("/tl <language|rnd> \"text\" | /tl help <page_num> | Source: AUTO (auto-detect)");
 				return true;
 			}
 			static const std::vector<std::vector<std::string>> languagePages = {
@@ -483,13 +483,26 @@ static bool HandleSickoUtilityCommand(PlayerControl* actor, const std::string& c
 		std::string language = trim(rawArgs.substr(0, languageEnd));
 		std::string quoted = trim(rawArgs.substr(languageEnd + 1));
 		if (language.empty() || quoted.size() < 2 || quoted.front() != '"' || quoted.back() != '"') {
-			QueueSickoUtilityMessage("Usage: /tl <language> \"text to translate\"");
+			QueueSickoUtilityMessage("Usage: /tl <language|rnd> \"text to translate\"");
 			return true;
 		}
 		std::string sourceText = quoted.substr(1, quoted.size() - 2);
 		if (sourceText.empty() || sourceText.find('"') != std::string::npos || SickoContainsEmoji(sourceText)) {
 			QueueSickoUtilityMessage("Invalid text: use one quoted string without emojis.");
 			return true;
+		}
+		if (strToLower(language) == "rnd") {
+			static const std::vector<std::string> randomLanguages = {
+				"ES", "EN", "FR", "DE", "IT", "PT",
+				"JA", "KO", "ZH", "RU", "NL", "PL",
+				"AR", "HI", "TR", "UK", "SV", "NO",
+				"DA", "FI", "EL", "HE", "ID", "MS",
+				"TH", "VI", "CS", "HU", "RO", "BG"
+			};
+			static std::mt19937 languageRng(static_cast<uint32_t>(
+				std::chrono::steady_clock::now().time_since_epoch().count()));
+			std::uniform_int_distribution<size_t> pickLanguage(0, randomLanguages.size() - 1);
+			language = randomLanguages[pickLanguage(languageRng)];
 		}
 		StartSickoTranslation(language, sourceText);
 		return true;
