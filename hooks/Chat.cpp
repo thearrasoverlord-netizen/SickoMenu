@@ -424,8 +424,10 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(playerData, nullptr)));
 		const std::string question = rawArgs.empty() ? "(sin pregunta)" : SickoSanitizePollText(rawArgs);
 		const std::string answer = GenerateSicko8BallAnswer();
-		QueueSickoPollMessage(std::format("- {} pregunta: {}\nLa bola magica dice: {}",
-			SickoShorten(playerName, 18), SickoShorten(question, 42), answer));
+		const std::string publicMessage = std::format("- {} pregunta: {}\nLa bola magica dice: {}",
+			SickoShorten(playerName, 18), SickoShorten(question, 42), answer);
+		if (Game::pLocalPlayer != nullptr && *Game::pLocalPlayer != nullptr)
+			PlayerControl_RpcSendChat(*Game::pLocalPlayer, convert_to_string(publicMessage), NULL);
 		return true;
 	}
 
@@ -1614,6 +1616,12 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 			if (IsInGame()) State.rpcQueue.push(new RpcForceSickoChat(PlayerSelection(playerToChatAs), chatText.substr(4), true));
 			if (IsInLobby()) State.lobbyRpcQueue.push(new RpcForceSickoChat(PlayerSelection(playerToChatAs), chatText.substr(4), true));
 			return; //we don't want the chat to know we're using "aum"
+		}
+
+		// /8ball is handled by the player who invokes it, so it works in public
+		// rooms even when that player is not the host.
+		if (chatTextLower == "/8ball" || chatTextLower.rfind("/8ball ", 0) == 0) {
+			if (HandleSickoSocialCommand(*Game::pLocalPlayer, chatText)) return;
 		}
 
 		if (IsHost() && chatText[0] == '/') {
