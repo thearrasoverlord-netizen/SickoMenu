@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cmath>
 #include <deque>
 #include <optional>
@@ -42,17 +43,16 @@ static std::string strToLower(std::string str) {
 struct SickoPoll {
 	std::string question;
 	std::vector<std::string> options;
-	uint8_t creatorId = 0;
 	std::string creatorName;
 	int durationSeconds = 60;
 	std::chrono::steady_clock::time_point endsAt{};
-	std::unordered_map<uint8_t, size_t> votes; // IDs are private; never displayed.
+	std::unordered_map<uint32_t, size_t> votes; // IDs are private; never displayed.
 };
 
 static std::optional<SickoPoll> sickoActivePoll;
 static std::deque<SickoPoll> sickoPollQueue;
-static std::unordered_map<uint8_t, std::chrono::steady_clock::time_point> sickoLastPollVote;
-static std::unordered_map<uint8_t, std::chrono::steady_clock::time_point> sickoLast8BallUse;
+static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLastPollVote;
+static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLast8BallUse;
 static std::deque<std::string> sickoPollOutputQueue;
 static float sickoPollOutputCooldown = 0.f;
 
@@ -293,7 +293,6 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 		SickoPoll poll;
 		poll.question = SickoSanitizePollText(quoted.front());
 		poll.durationSeconds = duration;
-		poll.creatorId = actor->fields.PlayerId;
 		auto creatorData = GetPlayerData(actor);
 		poll.creatorName = creatorData == nullptr ? "Host" :
 			SickoSanitizePollText(convert_from_string(NetworkedPlayerInfo_get_PlayerName(creatorData, nullptr)));
@@ -350,23 +349,23 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 			return true;
 		}
 
-		const uint8_t playerId = actor->fields.PlayerId;
-		auto previousVote = sickoActivePoll->votes.find(playerId);
+		const uint32_t playerKey = actor->fields._.NetId;
+		auto previousVote = sickoActivePoll->votes.find(playerKey);
 		if (previousVote != sickoActivePoll->votes.end() &&
 			previousVote->second == static_cast<size_t>(optionIndex)) {
 			return true; // Repeating the same vote produces no response.
 		}
 
 		const auto now = std::chrono::steady_clock::now();
-		auto lastVote = sickoLastPollVote.find(playerId);
+		auto lastVote = sickoLastPollVote.find(playerKey);
 		if (lastVote != sickoLastPollVote.end() &&
 			now - lastVote->second < std::chrono::seconds(5)) {
 			QueueSickoPollMessage("Espera 5 segundos entre votos.");
 			return true;
 		}
 
-		sickoActivePoll->votes[playerId] = static_cast<size_t>(optionIndex);
-		sickoLastPollVote[playerId] = now;
+		sickoActivePoll->votes[playerKey] = static_cast<size_t>(optionIndex);
+		sickoLastPollVote[playerKey] = now;
 		QueueSickoLiveResults();
 		return true;
 	}
@@ -406,14 +405,14 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 
 	if (command == "/8ball") {
 		if (actor == nullptr) return true;
-		const uint8_t playerId = actor->fields.PlayerId;
+		const uint32_t playerKey = actor->fields._.NetId;
 		const auto now = std::chrono::steady_clock::now();
-		auto lastUse = sickoLast8BallUse.find(playerId);
+		auto lastUse = sickoLast8BallUse.find(playerKey);
 		if (lastUse != sickoLast8BallUse.end() &&
 			now - lastUse->second < std::chrono::seconds(5)) {
 			return true;
 		}
-		sickoLast8BallUse[playerId] = now;
+		sickoLast8BallUse[playerKey] = now;
 		QueueSickoPollMessage(GenerateSicko8BallAnswer());
 		return true;
 	}
