@@ -1379,7 +1379,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 		if (sourcePlayer != nullptr && Game::pLocalPlayer != nullptr &&
 			*Game::pLocalPlayer != nullptr && sourcePlayer != *Game::pLocalPlayer &&
 			IsSickoSocialCommand(message)) {
-			const size_t commandEnd = message.find_first_of(" \\t");
+			const size_t commandEnd = message.find_first_of(" \t");
 			const std::string incomingCommand = strToLower(message.substr(0, commandEnd));
 			if (incomingCommand == "/tl" || incomingCommand == "/rnd" || incomingCommand == "/selfinf") {
 				HandleSickoSocialCommand(sourcePlayer, message);
