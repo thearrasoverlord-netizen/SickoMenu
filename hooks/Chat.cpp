@@ -122,8 +122,8 @@ static std::vector<std::string> BuildSickoPollReport(const SickoPoll& poll, bool
 			static_cast<int>(std::lround((static_cast<double>(counts[i]) * 100.0) / totalVotes));
 		const bool winner = totalVotes > 0 && counts[i] == highest;
 		const char letter = static_cast<char>('A' + i);
-		messages.push_back(std::format("{} ) {}: {}v/{}%{}",
-			letter, SickoShorten(poll.options[i], 7), counts[i], percentage, winner ? " 🏆" : ""));
+		messages.push_back(std::format("{}:{} {}v/{}%{}",
+			letter, SickoShorten(poll.options[i], 7), counts[i], percentage, winner ? "*" : ""));
 	}
 	if (totalVotes == 0) messages.push_back("Sin votos.");
 	return messages;
