@@ -20,6 +20,7 @@ int32_t dPlayerBanData_get_BanMinutesLeft(PlayerBanData* __this, MethodInfo* met
 void dChatBubble_SetName(ChatBubble* __this, String* playerName, bool isDead, bool voted, Color color, MethodInfo* method);
 void SendPrivateWarnMessage(PlayerControl* toPlayer, const std::string& reason, int totalWarns);
 void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer, String* chatText, bool censor, MethodInfo* method);
+void ResetSickoPollState();
 void dChatController_SetVisible(ChatController* __this, bool visible, MethodInfo* method);
 void dGameStartManager_Update(GameStartManager* __this, MethodInfo* method);
 void dGameStartManager_ReallyBegin(GameStartManager* __this, bool neverShow, MethodInfo* method);
