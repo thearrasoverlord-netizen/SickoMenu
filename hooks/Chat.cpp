@@ -143,7 +143,7 @@ static void QueueSickoLiveResults() {
 		QueueSickoPollMessages(BuildSickoPollReport(*sickoActivePoll, false, true), true);
 }
 
-static void ResetSickoPollState() {
+void ResetSickoPollState() {
 	sickoActivePoll.reset();
 	sickoPollQueue.clear();
 	sickoLastPollVote.clear();
