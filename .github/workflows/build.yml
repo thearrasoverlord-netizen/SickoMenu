@@ -64,7 +64,10 @@ jobs:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.zip
 
+  # Manual runs build and upload artifacts only. Releases are created only
+  # when this workflow is triggered by a published GitHub Release.
   AutoRelease:
+    if: github.event_name == 'release'
     runs-on: windows-2025
     needs: build
     permissions:
