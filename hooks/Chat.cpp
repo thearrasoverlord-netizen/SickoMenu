@@ -245,28 +245,20 @@ static bool ParseSickoDuration(const std::string& value, int& duration) {
 static std::string GenerateSicko8BallAnswer() {
 	static std::mt19937 rng(static_cast<uint32_t>(
 		std::chrono::steady_clock::now().time_since_epoch().count()));
-	static const std::vector<std::string> openings = {
-		"🎱 La bola mágica dice:", "🔮 El destino responde:",
-		"🧠 Mi análisis profesional dice:", "📡 Señal recibida:",
-		"✨ Las estrellas anuncian:", "🗿 La sabiduría ancestral dice:"
-	};
 	static const std::vector<std::string> answers = {
-		"Sí, sin ninguna duda.", "No cuentes con ello.",
-		"Las señales apuntan a que sí.", "Probablemente.",
-		"Las señales apuntan a que no.", "Pregunta más tarde.",
-		"No puedo revelar eso.", "Todo indica que sí.",
-		"Mi intuición dice que no.", "El universo está confundido.",
-		"Es un misterio para la humanidad.", "La respuesta es un rotundo quizá."
+		"Claro que SI",
+		"Claro que No... :)",
+		"Definitivamente",
+		"Estoy ocupado, pregunta más rato w",
+		"¿Porque haces esa pregunta?",
+		"¿Es cierto?",
+		"Busque en internet, y si...",
+		"No lo se",
+		"Más rato respondo, no tengo tiempo",
+		"Es que alguien como tú hace esas preguntas..."
 	};
-	static const std::vector<std::string> endings = {
-		"", "", "", " No preguntes cómo.", " Fuente: créeme.",
-		" El Wi-Fi del destino está lento.", " (100% inventado)."
-	};
-	auto pick = [&](const std::vector<std::string>& values) -> const std::string& {
-		std::uniform_int_distribution<size_t> distribution(0, values.size() - 1);
-		return values[distribution(rng)];
-	};
-	return pick(openings) + " " + pick(answers) + pick(endings);
+	std::uniform_int_distribution<size_t> distribution(0, answers.size() - 1);
+	return "La bola dice: " + answers[distribution(rng)];
 }
 
 static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& message) {
