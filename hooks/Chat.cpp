@@ -384,11 +384,12 @@ static void UpdateSickoUtilityMessages() {
 }
 
 static void StartSickoTranslation(const std::string& language, const std::string& sourceText) {
-	const std::string requestPath = L"/get?q=" + SickoUrlEncode(sourceText) +
+	const std::string requestPath = "/get?q=" + SickoUrlEncode(sourceText) +
 		"&langpair=autodetect%7C" + SickoUrlEncode(language);
 	std::thread([requestPath]() {
 		HINTERNET session = WinHttpOpen(L"TheSickMenu/2.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+		if (session) WinHttpSetTimeouts(session, 10000, 10000, 10000, 15000);
 		if (!session) { QueueSickoUtilityMessage("Translation failed: HTTP session error."); return; }
 		HINTERNET connection = WinHttpConnect(session, L"api.mymemory.translated.net",
 			INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -497,7 +498,7 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 		auto localPlayer = *Game::pLocalPlayer;
 		auto data = GetPlayerData(localPlayer);
 		auto outfit = data ? GetPlayerOutfit(data) : nullptr;
-		auto client = (InnerNetClient*)((*Game::pAmongUsClient));
+		auto client = (InnerNetClient*)(Game::pAmongUsClient != nullptr ? *Game::pAmongUsClient : nullptr);
 		auto clientData = client ? app::InnerNetClient_GetClientFromCharacter(client, localPlayer, nullptr) : nullptr;
 		static const char* colors[] = { "red", "blue", "green", "pink", "orange", "yellow", "black", "white",
 			"purple", "brown", "cyan", "lime", "maroon", "rose", "banana", "gray", "tan", "coral" };
