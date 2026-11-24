@@ -54,6 +54,7 @@ static std::deque<SickoPoll> sickoPollQueue;
 static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLastPollVote;
 static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> sickoLast8BallUse;
 static std::deque<std::string> sickoPollOutputQueue;
+static std::deque<std::string> sickoPollSentMessages;
 static float sickoPollOutputCooldown = 0.f;
 
 static std::string SickoSanitizePollText(std::string value) {
@@ -71,7 +72,10 @@ static std::string SickoSanitizePollText(std::string value) {
 static std::string SickoShorten(std::string value, size_t maxLength) {
 	if (value.size() <= maxLength) return value;
 	if (maxLength <= 3) return value.substr(0, maxLength);
-	return value.substr(0, maxLength - 3) + "...";
+	size_t limit = maxLength - 3;
+	while (limit > 0 && (static_cast<unsigned char>(value[limit]) & 0xC0) == 0x80)
+		--limit; // Never cut a UTF-8 character in half.
+	return value.substr(0, limit) + "...";
 }
 
 static bool IsSickoSocialCommand(const std::string& message) {
@@ -90,7 +94,15 @@ static void QueueSickoPollMessage(const std::string& message) {
 
 static void QueueSickoPollMessages(const std::vector<std::string>& messages, bool replacePending) {
 	if (replacePending) sickoPollOutputQueue.clear();
-	for (const auto& message : messages) QueueSickoPollMessage(message);
+
+	// One logical update = one SendChat RPC. Newlines keep the report together.
+	std::string combined;
+	for (size_t i = 0; i < messages.size(); ++i) {
+		if (messages[i].empty()) continue;
+		if (!combined.empty()) combined += (i == 1 ? "\n\n" : "\n");
+		combined += messages[i];
+	}
+	if (!combined.empty()) QueueSickoPollMessage(combined);
 }
 
 static std::vector<std::string> BuildSickoPollReport(const SickoPoll& poll, bool cancelled, bool live) {
@@ -101,22 +113,19 @@ static std::vector<std::string> BuildSickoPollReport(const SickoPoll& poll, bool
 	const int totalVotes = static_cast<int>(poll.votes.size());
 	const int highest = counts.empty() ? 0 : *std::max_element(counts.begin(), counts.end());
 	std::vector<std::string> messages;
-	const std::string heading = cancelled ? "🚫 Encuesta cancelada: " :
-		(live ? "📊 En vivo: " : "📊 Encuesta finalizada: ");
-	messages.push_back(heading + SickoShorten(poll.question, 82));
+	const std::string heading = cancelled ? "🚫 Cancelada" :
+		(live ? "📊 En vivo" : "📊 Final");
+	messages.push_back(std::format("{} ({}): {}", heading, totalVotes, SickoShorten(poll.question, 18)));
 
 	for (size_t i = 0; i < poll.options.size(); ++i) {
 		const int percentage = totalVotes == 0 ? 0 :
 			static_cast<int>(std::lround((static_cast<double>(counts[i]) * 100.0) / totalVotes));
 		const bool winner = totalVotes > 0 && counts[i] == highest;
 		const char letter = static_cast<char>('A' + i);
-		std::string line = std::format("[{}] {} — {} votos ({}%){}",
-			letter, SickoShorten(poll.options[i], 54), counts[i], percentage, winner ? " 🏆" : "");
-		messages.push_back(line);
+		messages.push_back(std::format("{} ) {}: {}v/{}%{}",
+			letter, SickoShorten(poll.options[i], 7), counts[i], percentage, winner ? " 🏆" : ""));
 	}
-
-	if (totalVotes == 0) messages.push_back("Sin votos. Total: 0 votos.");
-	else messages.push_back(std::format("Total: {} votos.", totalVotes));
+	if (totalVotes == 0) messages.push_back("Sin votos.");
 	return messages;
 }
 
@@ -149,6 +158,7 @@ void ResetSickoPollState() {
 	sickoLastPollVote.clear();
 	sickoLast8BallUse.clear();
 	sickoPollOutputQueue.clear();
+	sickoPollSentMessages.clear();
 	sickoPollOutputCooldown = 0.f;
 }
 
@@ -174,6 +184,8 @@ static void UpdateSickoPolls() {
 		(IsInLobby() || IsInGame())) {
 		const std::string message = sickoPollOutputQueue.front();
 		sickoPollOutputQueue.pop_front();
+		sickoPollSentMessages.push_back(message);
+		while (sickoPollSentMessages.size() > 16) sickoPollSentMessages.pop_front();
 		PlayerControl_RpcSendChat(*Game::pLocalPlayer, convert_to_string(message), NULL);
 		sickoPollOutputCooldown = 3.2f;
 	}
@@ -375,16 +387,18 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 			QueueSickoPollMessage("No hay encuestas pendientes en la cola.");
 			return true;
 		}
+		std::vector<std::string> queueLines;
 		for (size_t i = 0; i < sickoPollQueue.size(); ++i) {
 			const auto& poll = sickoPollQueue[i];
-			std::string line = std::format("Cola #{}: {} | Por: {}",
-				i + 1, SickoShorten(poll.question, 34), SickoShorten(poll.creatorName, 12));
+			std::string line = std::format("#{} {} ({})",
+				i + 1, SickoShorten(poll.question, 22), SickoShorten(poll.creatorName, 10));
 			for (size_t j = 0; j < poll.options.size(); ++j) {
 				line += std::format(" {}:{}", static_cast<char>('A' + j),
-					SickoShorten(poll.options[j], 12));
+					SickoShorten(poll.options[j], 7));
 			}
-			QueueSickoPollMessage(line);
+			queueLines.push_back(line);
 		}
+		QueueSickoPollMessages(queueLines, false);
 		return true;
 	}
 
@@ -447,7 +461,6 @@ float calculateChatNewlineSize(std::string playerName) {
 			i += 6;
 			size_t endPos = playerName.find('>', i);
 			if (endPos == std::string::npos) break;
-
 			std::string valueStr = playerName.substr(i, endPos - i);
 			bool isPercent = false;
 
@@ -897,8 +910,7 @@ static bool HandleChatCommand(PlayerControl* actor, const std::string& message) 
 		}
 	}
 	else if (cmd == "/unwarn" || cmd == "/unwarnc") {
-		if (PlayerHasPermission(actor, "warn") && !rawArgs.empty()) {
-			size_t numSpace = rawArgs.find(' ');
+		if (PlayerHasPermission(actor, "warn") && !rawArgs.empty()) {			size_t numSpace = rawArgs.find(' ');
 			if (numSpace == std::string::npos) {
 				localWarn("<#aaaaaa><size=-0.24><font=\"Barlow-Regular Masked\"><b>Usage: /unwarn <Name> <WarnNumber> or /unwarnc <Color> <WarnNumber> - use /checkwarns <FriendCode> to see a player's warn numbers</b></font></color>");
 			}
@@ -1004,6 +1016,14 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 		auto local = GetPlayerData(*Game::pLocalPlayer);
 		std::string message = convert_from_string(chatText);
 		std::string newChatText = message;
+		bool isSickoPollSystemMessage = false;
+		if (IsHost()) {
+			auto sentMessage = std::find(sickoPollSentMessages.begin(), sickoPollSentMessages.end(), message);
+			if (sentMessage != sickoPollSentMessages.end()) {
+				sickoPollSentMessages.erase(sentMessage);
+				isSickoPollSystemMessage = true;
+			}
+		}
 		if (IsHost() && sourcePlayer != *Game::pLocalPlayer) {
 			const bool handled = HandleChatCommand(sourcePlayer, message);
 			if (handled && IsSickoSocialCommand(message)) return;
@@ -1051,7 +1071,8 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 			};
 			std::string firstWordLower = strToLower(message.substr(0, message.find(' ')));
 			bool isRecognizedCommand = KNOWN_COMMAND_WORDS.count(firstWordLower) > 0;
-			if (State.SMAC_CheckChat && !isRecognizedCommand && ((IsInGame() && !State.InMeeting && !player->fields.IsDead) || chatText->fields.m_stringLength > 120)) {
+			if (State.SMAC_CheckChat && !isRecognizedCommand && !isSickoPollSystemMessage &&
+				((IsInGame() && !State.InMeeting && !player->fields.IsDead) || chatText->fields.m_stringLength > 120)) {
 				SMAC_OnCheatDetected(sourcePlayer, "Abnormal Chat");
 			}
 			if (State.SMAC_CheckBadWords) {
@@ -1347,8 +1368,7 @@ void dChatController_Update(ChatController* __this, MethodInfo* method) {
 		State.MessageSent = true;
 	}
 
-	if (!State.PanicMode && State.AprilFoolsMode && State.RizzUpEveryone && (IsInGame() || IsInLobby()) && (__this->fields.timeSinceLastMessage >= 3.5f || !State.SafeMode)) {
-		std::vector<std::string> rizzLinesList = { "Do you have some Ohio rizz? Because you just turned my brain into pure jelly!",
+	if (!State.PanicMode && State.AprilFoolsMode && State.RizzUpEveryone && (IsInGame() || IsInLobby()) && (__this->fields.timeSinceLastMessage >= 3.5f || !State.SafeMode)) {		std::vector<std::string> rizzLinesList = { "Do you have some Ohio rizz? Because you just turned my brain into pure jelly!",
 			"If beauty were a Skibidi Toilet, you'd be the one everyone’s trying to get next to!", "Is your name Ohio? Because you’re making my heart do the Skibidi!",
 			"Is your aura made of coffee? Because you’re brewing up some strong feelings in me!", "I see dat gyatt and I wanna fanum tax some of dat",
 			"Am I Baby Gronk? Because you can be my Livvy Dunne", "Sup shawty, are you skibidi, because I could use that to my sigma", "Hey shawty, are you skibidi rizz in ohio?",
