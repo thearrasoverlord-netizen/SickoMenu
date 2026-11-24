@@ -567,6 +567,9 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 	const size_t spacePos = message.find_first_of(" \t");
 	const std::string command = strToLower(message.substr(0, spacePos));
 	const std::string rawArgs = spacePos == std::string::npos ? "" : trim(message.substr(spacePos + 1));
+	if (command == "/tl" || command == "/rnd" || command == "/selfinf")
+		return HandleSickoUtilityCommand(command, rawArgs);
+
 	const bool actorIsHost = IsHost() && actor != nullptr &&
 		Game::pLocalPlayer != nullptr && actor == *Game::pLocalPlayer;
 
