@@ -452,10 +452,10 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 	}
 
 	if (command == "/rnd") {
-		static const std::regex pattern(R"(^\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\s+(true|false)$)", std::regex::icase);
+		static const std::regex pattern(R"(^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s+(true|false)\s*$)", std::regex::icase);
 		std::smatch match;
 		if (!std::regex_match(rawArgs, match, pattern)) {
-			QueueSickoUtilityMessage("Usage: /rnd [<X>, <Y>] <true|false>");
+			QueueSickoUtilityMessage("Usage: /rnd <X>, <Y> <true|false>");
 			return true;
 		}
 		try {
