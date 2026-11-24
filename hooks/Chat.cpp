@@ -429,7 +429,7 @@ static void StartSickoTranslation(const std::string& language, const std::string
 	}).detach();
 }
 
-static bool HandleSickoUtilityCommand(const std::string& command, const std::string& rawArgs) {
+static bool HandleSickoUtilityCommand(PlayerControl* actor, const std::string& command, const std::string& rawArgs) {
 	if (command == "/tl") {
 		if (strToLower(rawArgs).rfind("help", 0) == 0) {
 			std::istringstream helpInput(rawArgs);
@@ -535,15 +535,17 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 			QueueSickoUtilityMessage("Usage: /selfinf <true|false>");
 			return true;
 		}
-		if (Game::pLocalPlayer == nullptr || *Game::pLocalPlayer == nullptr) {
+		if (actor == nullptr) {
 			QueueSickoUtilityMessage("Player information is unavailable.");
 			return true;
 		}
-		auto localPlayer = *Game::pLocalPlayer;
-		auto data = GetPlayerData(localPlayer);
+		// /selfinf always reports the player who invoked the command, not the
+		// client that happens to process the incoming chat message.
+		auto requestingPlayer = actor;
+		auto data = GetPlayerData(requestingPlayer);
 		auto outfit = data ? GetPlayerOutfit(data) : nullptr;
 		auto client = (InnerNetClient*)(Game::pAmongUsClient != nullptr ? *Game::pAmongUsClient : nullptr);
-		auto clientData = client ? app::InnerNetClient_GetClientFromCharacter(client, localPlayer, nullptr) : nullptr;
+		auto clientData = client ? app::InnerNetClient_GetClientFromCharacter(client, requestingPlayer, nullptr) : nullptr;
 		static const char* colors[] = { "red", "blue", "green", "pink", "orange", "yellow", "black", "white",
 			"purple", "brown", "cyan", "lime", "maroon", "rose", "banana", "gray", "tan", "coral" };
 		std::string color = "unknown";
@@ -566,7 +568,7 @@ static bool HandleSickoUtilityCommand(const std::string& command, const std::str
 			}
 		}
 		const std::string level = data ? std::to_string(data->fields.PlayerLevel) : "unknown";
-		// The local game's FriendCode field is used only for the invoking player.
+		// The game's FriendCode field is read only for the player invoking /selfinf.
 		// If the game/account does not expose it, omit it rather than guessing.
 		std::string friendCode = (data && data->fields.FriendCode) ?
 			convert_from_string(data->fields.FriendCode) : "";
@@ -612,7 +614,7 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 	const std::string command = strToLower(message.substr(0, spacePos));
 	const std::string rawArgs = spacePos == std::string::npos ? "" : trim(message.substr(spacePos + 1));
 	if (command == "/tl" || command == "/rnd" || command == "/selfinf")
-		return HandleSickoUtilityCommand(command, rawArgs);
+		return HandleSickoUtilityCommand(actor, command, rawArgs);
 
 	const bool actorIsHost = IsHost() && actor != nullptr &&
 		Game::pLocalPlayer != nullptr && actor == *Game::pLocalPlayer;
@@ -1371,6 +1373,20 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 		// A non-host client with TheSickMenu can act as the 8-ball responder.
 		// Incoming commands are processed once when they arrive; the reply is sent
 		// as a normal public chat RPC from this modded client.
+		// Utility commands are also accepted from other players. The sender's
+		// own mod intercepts local commands; this path lets an unmodded sender
+		// use them when at least one TheSickMenu client is present.
+		if (sourcePlayer != nullptr && Game::pLocalPlayer != nullptr &&
+			*Game::pLocalPlayer != nullptr && sourcePlayer != *Game::pLocalPlayer &&
+			IsSickoSocialCommand(message)) {
+			const size_t commandEnd = message.find_first_of(" \\t");
+			const std::string incomingCommand = strToLower(message.substr(0, commandEnd));
+			if (incomingCommand == "/tl" || incomingCommand == "/rnd" || incomingCommand == "/selfinf") {
+				HandleSickoSocialCommand(sourcePlayer, message);
+				return; // Hide the raw command; the result is sent as public chat.
+			}
+		}
+
 		if (!IsHost() && sourcePlayer != nullptr && Game::pLocalPlayer != nullptr &&
 			*Game::pLocalPlayer != nullptr && sourcePlayer != *Game::pLocalPlayer &&
 			IsSicko8BallCommand(message)) {
