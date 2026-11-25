@@ -25,7 +25,7 @@ Su valor debe ser exactamente el mismo que la variable \`BOT_API_TOKEN\` configu
 1. Abre **Editar las variables de entorno de tu cuenta** desde el menú Inicio.
 2. En **Variables de usuario**, crea \`SMAI_BOT_TOKEN\`.
 3. Pega el valor de \`BOT_API_TOKEN\` de Render como valor de la variable.
-4. Guarda los cambios y reinicia TheSickMenu/Among Us.
+4. Guarda los cambios, cierra completamente Steam/Among Us y vuelve a abrirlos para que hereden la variable.
 
 No pongas el token en el código fuente, en GitHub, en capturas ni en mensajes. No compartas el valor conmigo.
 
