@@ -449,7 +449,7 @@ static std::string SickoGetPlayerDevice(PlayerControl* actor) {
 }
 
 static void RecordSickoAiHistory(PlayerControl* actor, const std::string& message) {
-	if (!actor || message.empty() || message[0] == '/') return;
+	if (!actor || message.empty() || message[0] == '/' || message.rfind("(AI): ", 0) == 0) return;
 	const std::string playerKey = SickoGetFriendCode(actor);
 	if (playerKey.empty()) return;
 	auto& history = sickoAiHistory[playerKey];
@@ -516,7 +516,7 @@ static void StartSickoAi(PlayerControl* actor, const std::string& question) {
 		QueueSickoAiOutput("", "No se pudo crear el identificador privado del jugador.", true);
 		return;
 	}
-	if (sickoAiRequestsInFlight.load() >= 2) {
+	if (sickoAiRequestsInFlight.load() >= 1) {
 		QueueSickoAiOutput("", "SMAI ya está procesando otras preguntas.", true);
 		return;
 	}
@@ -539,6 +539,17 @@ static void StartSickoAi(PlayerControl* actor, const std::string& question) {
 	requestBody += "\"level\":" + SickoJsonString(level) +
 		",\"device\":" + SickoJsonString(SickoGetPlayerDevice(actor)) +
 		",\"game\":\"Among Us\"},\"web_search\":true}";
+
+	// Save the current prompt to the short-lived per-player conversation history.
+	auto& playerHistory = sickoAiHistory[friendCode];
+	playerHistory.push_back({ "user", trim(question) });
+	while (playerHistory.size() > 8) playerHistory.pop_front();
+	size_t historyBytes = 0;
+	for (const auto& item : playerHistory) historyBytes += item.content.size();
+	while (!playerHistory.empty() && historyBytes > 6000) {
+		historyBytes -= playerHistory.front().content.size();
+		playerHistory.pop_front();
+	}
 
 	sickoAiRequestsInFlight.fetch_add(1);
 	try {
