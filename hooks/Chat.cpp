@@ -22,6 +22,11 @@
 #include <thread>
 #include <mutex>
 #include <winhttp.h>
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 
 static float copyNotificationTimer = 0.f;
 static bool isTextCut = false;
@@ -86,7 +91,7 @@ static bool IsSickoSocialCommand(const std::string& message) {
 	size_t end = message.find_first_of(" \t");
 	std::string command = strToLower(message.substr(0, end));
 	static const std::set<std::string> commands = {
-		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball", "/tl", "/rnd", "/selfinf"
+		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball", "/tl", "/rnd", "/selfinf", "/ai"
 	};
 	return commands.count(command) != 0;
 }
@@ -157,8 +162,7 @@ static void FinishSickoPoll(bool cancelled) {
 }
 
 static void QueueSickoLiveResults() {
-	if (sickoActivePoll.has_value())
-		QueueSickoPollMessages(BuildSickoPollReport(*sickoActivePoll, false, true), true);
+	if (sickoActivePoll.has_value())		QueueSickoPollMessages(BuildSickoPollReport(*sickoActivePoll, false, true), true);
 }
 
 void ResetSickoPollState() {
@@ -317,8 +321,7 @@ static bool SickoExtractJsonString(const std::string& json, const std::string& k
 	if (pos == std::string::npos) return false;
 	pos = json.find('"', pos + 1);
 	if (pos == std::string::npos) return false;
-	++pos;
-	value.clear();
+	++pos;	value.clear();
 	while (pos < json.size()) {
 		char ch = json[pos++];
 		if (ch == '"') return true;
@@ -362,6 +365,309 @@ static bool SickoExtractJsonString(const std::string& json, const std::string& k
 		else value += ch;
 	}
 	return false;
+}
+
+
+
+// SMAI integration: asynchronous HTTPS requests; the bot token is read only
+// from the local SMAI_BOT_TOKEN environment variable and is never committed.
+#include <atomic>
+#include <cstdlib>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+
+struct SickoAiHistoryItem {
+	std::string role;
+	std::string content;
+};
+struct SickoAiOutput {
+	std::string playerKey;
+	std::string message;
+	bool error = false;
+};
+static std::unordered_map<std::string, std::deque<SickoAiHistoryItem>> sickoAiHistory;
+static std::mutex sickoAiMutex;
+static std::deque<SickoAiOutput> sickoAiOutputQueue;
+static std::atomic<int> sickoAiRequestsInFlight{ 0 };
+static float sickoAiOutputCooldown = 0.f;
+
+static std::string SickoGetFriendCode(PlayerControl* actor) {
+	if (!actor) return "";
+	auto data = GetPlayerData(actor);
+	if (!data || !data->fields.FriendCode) return "";
+	return trim(convert_from_string(data->fields.FriendCode));
+}
+
+static std::string SickoHmacPlayerId(const std::string& friendCode, const std::string& token) {
+	if (friendCode.empty() || token.empty()) return "";
+	BCRYPT_ALG_HANDLE algorithm = nullptr;
+	BCRYPT_HASH_HANDLE hashHandle = nullptr;
+	DWORD objectLength = 0, bytesCopied = 0;
+	std::vector<UCHAR> hashObject;
+	std::array<UCHAR, 32> hash{};
+	std::string result;
+
+	if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr,
+		BCRYPT_ALG_HANDLE_HMAC_FLAG) < 0) return "";
+	if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLength),
+		sizeof(objectLength), &bytesCopied, 0) < 0) {
+		BCryptCloseAlgorithmProvider(algorithm, 0);
+		return "";
+	}
+	hashObject.resize(objectLength);
+	if (BCryptCreateHash(algorithm, &hashHandle, hashObject.data(), objectLength,
+		reinterpret_cast<PUCHAR>(const_cast<char*>(token.data())),
+		static_cast<ULONG>(token.size()), 0) >= 0 &&
+		BCryptHashData(hashHandle, reinterpret_cast<PUCHAR>(const_cast<char*>(friendCode.data())),
+			static_cast<ULONG>(friendCode.size()), 0) >= 0 &&
+		BCryptFinishHash(hashHandle, hash.data(), static_cast<ULONG>(hash.size()), 0) >= 0) {
+		static const char hex[] = "0123456789abcdef";
+		result = "p_";
+		for (UCHAR byte : hash) {
+			result += hex[byte >> 4];
+			result += hex[byte & 15];
+		}
+	}
+	if (hashHandle) BCryptDestroyHash(hashHandle);
+	BCryptCloseAlgorithmProvider(algorithm, 0);
+	return result;
+}
+
+static std::string SickoGetPlayerDevice(PlayerControl* actor) {
+	auto client = (InnerNetClient*)(Game::pAmongUsClient != nullptr ? *Game::pAmongUsClient : nullptr);
+	auto clientData = client && actor
+		? app::InnerNetClient_GetClientFromCharacter(client, actor, nullptr) : nullptr;
+	if (!clientData || !clientData->fields.PlatformData) return "Unknown";
+	switch (clientData->fields.PlatformData->fields.Platform) {
+	case Platforms__Enum::StandaloneEpicPC: return "Epic Games (PC)";
+	case Platforms__Enum::StandaloneSteamPC: return "Steam (PC)";
+	case Platforms__Enum::StandaloneMac: return "Mac";
+	case Platforms__Enum::StandaloneWin10: return "Microsoft Store (PC)";
+	case Platforms__Enum::StandaloneItch: return "itch.io (PC)";
+	case Platforms__Enum::IPhone: return "iOS";
+	case Platforms__Enum::Android: return "Android";
+	case Platforms__Enum::Switch: return "Nintendo Switch";
+	case Platforms__Enum::Xbox: return "Xbox";
+	case Platforms__Enum::Playstation: return "PlayStation";
+	default: return "Unknown";
+	}
+}
+
+static void RecordSickoAiHistory(PlayerControl* actor, const std::string& message) {
+	if (!actor || message.empty() || message[0] == '/') return;
+	const std::string playerKey = SickoGetFriendCode(actor);
+	if (playerKey.empty()) return;
+	auto& history = sickoAiHistory[playerKey];
+	history.push_back({ "user", SickoShorten(trim(message), 2000) });
+	while (history.size() > 8) history.pop_front();
+	size_t total = 0;
+	for (const auto& item : history) total += item.content.size();
+	while (!history.empty() && total > 6000) {
+		total -= history.front().content.size();
+		history.pop_front();
+	}
+}
+
+static void QueueSickoAiOutput(const std::string& playerKey, const std::string& message, bool error) {
+	std::lock_guard<std::mutex> lock(sickoAiMutex);
+	if (sickoAiOutputQueue.size() >= 8) sickoAiOutputQueue.pop_front();
+	sickoAiOutputQueue.push_back({ playerKey, message, error });
+}
+
+static size_t SickoUtf8Length(const std::string& value) {
+	size_t count = 0;
+	for (unsigned char byte : value)
+		if ((byte & 0xC0) != 0x80) ++count;
+	return count;
+}
+
+static bool SickoValidateAiMessage(std::string& answer) {
+	const std::string prefix = "(AI): ";
+	const std::string suffix = " - Comando: /ai";
+	if (answer.rfind(prefix, 0) != 0 ||
+		answer.size() < prefix.size() + suffix.size() ||
+		answer.compare(answer.size() - suffix.size(), suffix.size(), suffix) != 0)
+		return false;
+	if (SickoUtf8Length(answer) > 100 || answer.find('\n') != std::string::npos ||
+		answer.find('\r') != std::string::npos || SickoContainsEmoji(answer))
+		return false;
+	const size_t bodyStart = prefix.size();
+	const size_t bodyLength = answer.size() - prefix.size() - suffix.size();
+	if (bodyLength == 0) return false;
+	std::string body = answer.substr(bodyStart, bodyLength);
+	if (body.find('<') != std::string::npos || body.find('>') != std::string::npos)
+		return false;
+	return true;
+}
+
+static void StartSickoAi(PlayerControl* actor, const std::string& question) {
+	if (!actor || question.empty()) {
+		QueueSickoAiOutput("", "Uso: /ai <pregunta>", true);
+		return;
+	}
+	if (question.size() > 1500) {
+		QueueSickoAiOutput("", "La pregunta supera el límite permitido.", true);
+		return;
+	}
+	const char* tokenValue = std::getenv("SMAI_BOT_TOKEN");
+	const std::string token = tokenValue ? tokenValue : "";
+	if (token.empty()) {
+		QueueSickoAiOutput("", "Falta SMAI_BOT_TOKEN en las variables de entorno.", true);
+		return;
+	}
+	const std::string friendCode = SickoGetFriendCode(actor);
+	const std::string playerId = SickoHmacPlayerId(friendCode, token);
+	if (playerId.empty()) {
+		QueueSickoAiOutput("", "No se pudo crear el identificador privado del jugador.", true);
+		return;
+	}
+	if (sickoAiRequestsInFlight.load() >= 2) {
+		QueueSickoAiOutput("", "SMAI ya está procesando otras preguntas.", true);
+		return;
+	}
+
+	std::string requestBody = "{\"player_id\":" + SickoJsonString(playerId) +
+		",\"question\":" + SickoJsonString(trim(question)) + ",\"history\":[";
+	auto historyIt = sickoAiHistory.find(friendCode);
+	if (historyIt != sickoAiHistory.end()) {
+		bool first = true;
+		for (const auto& item : historyIt->second) {
+			if (!first) requestBody += ",";
+			first = false;
+			requestBody += "{\"role\":" + SickoJsonString(item.role) +
+				",\"content\":" + SickoJsonString(item.content) + "}";
+		}
+	}
+	requestBody += "],\"player_memory\":{";
+	auto playerData = GetPlayerData(actor);
+	const std::string level = playerData ? std::to_string(playerData->fields.PlayerLevel) : "unknown";
+	requestBody += "\"level\":" + SickoJsonString(level) +
+		",\"device\":" + SickoJsonString(SickoGetPlayerDevice(actor)) +
+		",\"game\":\"Among Us\"},\"web_search\":true}";
+
+	sickoAiRequestsInFlight.fetch_add(1);
+	try {
+		std::thread([token, requestBody, friendCode]() {
+			struct RequestGuard {
+				std::atomic<int>& counter;
+				~RequestGuard() { counter.fetch_sub(1); }
+			} guard{ sickoAiRequestsInFlight };
+
+			HINTERNET session = WinHttpOpen(L"TheSickMenu-SMAI/2.0",
+				WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+				WINHTTP_NO_PROXY_BYPASS, 0);
+			if (session) WinHttpSetTimeouts(session, 10000, 10000, 15000, 45000);
+			if (!session) {
+				QueueSickoAiOutput(friendCode, "No se pudo iniciar la conexión con SMAI.", true);
+				return;
+			}
+			HINTERNET connection = WinHttpConnect(session,
+				L"smai-backend-88so.onrender.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+			HINTERNET request = connection ? WinHttpOpenRequest(connection, L"POST", L"/ai",
+				nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+				WINHTTP_FLAG_SECURE) : nullptr;
+
+			std::string response;
+			bool ok = request != nullptr;
+			std::string headers = "Content-Type: application/json\r\nX-Bot-Token: " + token + "\r\n";
+			std::wstring wideHeaders(headers.begin(), headers.end());
+			if (ok) ok = WinHttpSendRequest(request, wideHeaders.c_str(),
+				static_cast<DWORD>(-1L), const_cast<char*>(requestBody.data()),
+				static_cast<DWORD>(requestBody.size()),
+				static_cast<DWORD>(requestBody.size()), 0) &&
+				WinHttpReceiveResponse(request, nullptr);
+
+			DWORD status = 0, statusSize = sizeof(status);
+			if (ok) ok = WinHttpQueryHeaders(request,
+				WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
+				WINHTTP_NO_HEADER_INDEX) != FALSE;
+
+			if (ok && status == 200) {
+				DWORD available = 0;
+				do {
+					available = 0;
+					if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+					if (response.size() + available > 65536) { ok = false; break; }
+					std::string chunk(available, '\0');
+					DWORD read = 0;
+					if (!WinHttpReadData(request, chunk.data(), available, &read)) {
+						ok = false;
+						break;
+					}
+					chunk.resize(read);
+					response += chunk;
+				} while (available > 0);
+			}
+			if (request) WinHttpCloseHandle(request);
+			if (connection) WinHttpCloseHandle(connection);
+			WinHttpCloseHandle(session);
+
+			if (!ok) {
+				QueueSickoAiOutput(friendCode, "Error de conexión con SMAI.", true);
+				return;
+			}
+			if (status != 200) {
+				if (status == 422)
+					QueueSickoAiOutput(friendCode, "SMAI bloqueó la respuesta; no se publicó.", true);
+				else if (status == 401)
+					QueueSickoAiOutput(friendCode, "Token de SMAI inválido.", true);
+				else
+					QueueSickoAiOutput(friendCode, std::format("SMAI devolvió HTTP {}.", status), true);
+				return;
+			}
+			std::string answer;
+			if (!SickoExtractJsonString(response, "answer", answer) ||
+				!SickoValidateAiMessage(answer)) {
+				QueueSickoAiOutput(friendCode, "Respuesta de SMAI inválida; no se publicó.", true);
+				return;
+			}
+			QueueSickoAiOutput(friendCode, answer, false);
+		}).detach();
+	}
+	catch (...) {
+		sickoAiRequestsInFlight.fetch_sub(1);
+		QueueSickoAiOutput(friendCode, "No se pudo iniciar la petición a SMAI.", true);
+	}
+}
+
+static void UpdateSickoAiMessages() {
+	if (sickoAiOutputCooldown > 0.f)
+		sickoAiOutputCooldown -= Time_get_deltaTime(NULL);
+	if (Game::pLocalPlayer == nullptr || *Game::pLocalPlayer == nullptr ||
+		(!IsInLobby() && !IsInGame()) || sickoAiOutputCooldown > 0.f) return;
+
+	SickoAiOutput output;
+	{
+		std::lock_guard<std::mutex> lock(sickoAiMutex);
+		if (sickoAiOutputQueue.empty()) return;
+		output = std::move(sickoAiOutputQueue.front());
+		sickoAiOutputQueue.pop_front();
+	}
+	if (output.error) {
+		auto hud = Game::HudManager.GetInstance();
+		if (hud && hud->fields.Chat)
+			ChatController_AddChatWarning(hud->fields.Chat, convert_to_string(output.message), NULL);
+		return;
+	}
+
+	std::string answer = output.message;
+	if (!SickoValidateAiMessage(answer)) return;
+	const std::string prefix = "(AI): ";
+	const std::string suffix = " - Comando: /ai";
+	const std::string assistantText = answer.substr(prefix.size(),
+		answer.size() - prefix.size() - suffix.size());
+	auto& history = sickoAiHistory[output.playerKey];
+	history.push_back({ "assistant", assistantText });
+	while (history.size() > 8) history.pop_front();
+	size_t total = 0;
+	for (const auto& item : history) total += item.content.size();
+	while (!history.empty() && total > 6000) {
+		total -= history.front().content.size();
+		history.pop_front();
+	}
+	PlayerControl_RpcSendChat(*Game::pLocalPlayer, convert_to_string(answer), NULL);
+	sickoAiOutputCooldown = 3.2f;
 }
 
 static void QueueSickoUtilityMessage(const std::string& message) {
@@ -477,8 +783,7 @@ static bool HandleSickoUtilityCommand(PlayerControl* actor, const std::string& c
 			}
 			QueueSickoUtilityMessage(listing);
 			return true;
-		}
-		size_t languageEnd = rawArgs.find_first_of(" \t");
+		}		size_t languageEnd = rawArgs.find_first_of(" \t");
 		if (languageEnd == std::string::npos) {
 			QueueSickoUtilityMessage("Usage: /tl <language> \"text to translate\"");
 			return true;
@@ -631,14 +936,18 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 	const std::string rawArgs = spacePos == std::string::npos ? "" : trim(message.substr(spacePos + 1));
 	if (command == "/tl" || command == "/rnd" || command == "/selfinf")
 		return HandleSickoUtilityCommand(actor, command, rawArgs);
+	if (command == "/ai") {
+		if (rawArgs.empty()) QueueSickoAiOutput("", "Uso: /ai <pregunta>", true);
+		else StartSickoAi(actor, rawArgs);
+		return true;
+	}
 
 	const bool actorIsHost = IsHost() && actor != nullptr &&
 		Game::pLocalPlayer != nullptr && actor == *Game::pLocalPlayer;
 
 	if (command == "/startpoll") {
 		if (!actorIsHost) {
-			QueueSickoPollMessage("Solo el anfitrión puede crear encuestas.");
-			return true;
+			QueueSickoPollMessage("Solo el anfitrión puede crear encuestas.");			return true;
 		}
 
 		std::vector<std::string> quoted;
@@ -797,8 +1106,7 @@ float calculateChatNewlineSize(std::string playerName) {
 	size_t i = 0;
 
 	while (i < playerName.size()) {
-		// Handle <br>
-		if (i + 3 < playerName.size() && playerName.compare(i, 4, "<br>") == 0) {
+		// Handle <br>		if (i + 3 < playerName.size() && playerName.compare(i, 4, "<br>") == 0) {
 			result += maxSize;
 			maxSize = 100.f;
 			i += 4;
@@ -957,7 +1265,6 @@ std::string UncensorLink(std::string text, std::string dotReplacer = ",");
 
 void ChangeOtherChatObjectColors(ChatController* chatController, Color col) {
 	// https://github.com/the-real-techiee/DarkModeAU/blob/main/DarkMode/DarkModeMain.cs
-
 	auto openBanMenuIcon = GameObject_Find(convert_to_string("OpenBanMenuIcon"), NULL);
 	auto openKeyboardIcon = GameObject_Find(convert_to_string("OpenKeyboardIcon"), NULL);
 	auto quickChatIcon = GameObject_Find(convert_to_string("QuickChatIcon"), NULL);
@@ -1119,7 +1426,6 @@ static bool HandleChatCommand(PlayerControl* actor, const std::string& message) 
 	if (cmd == "/uw") cmd = "/unwarn";
 	if (cmd == "/cw") cmd = "/checkwarns";
 
-
 	static const std::set<std::string> KNOWN_COMMANDS = {
 	"/color", "/colour", "/preset", "/sicko",
 	"/kick", "/kickc", "/ban", "/banc",
@@ -1277,8 +1583,7 @@ static bool HandleChatCommand(PlayerControl* actor, const std::string& message) 
 				int reasonIndex = -1;
 				try { reasonIndex = std::stoi(numberStr) - 1; }
 				catch (...) { reasonIndex = -1; }
-				if (reasonIndex < 0) {
-					localWarn("<#ff0000><size=-0.24><font=\"Barlow-Regular Masked\"><b>Invalid WarnNumber.</b></font></color>");
+				if (reasonIndex < 0) {					localWarn("<#ff0000><size=-0.24><font=\"Barlow-Regular Masked\"><b>Invalid WarnNumber.</b></font></color>");
 				}
 				else {
 					bool byColor = (cmd == "/unwarnc");
@@ -1374,6 +1679,8 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 		std::string message = convert_from_string(chatText);
 		std::string newChatText = message;
 		bool isSickoPollSystemMessage = false;
+		if (sourcePlayer != nullptr && !message.empty() && message[0] != '/')
+			RecordSickoAiHistory(sourcePlayer, message);
 		if (IsHost()) {
 			auto sentMessage = std::find(sickoPollSentMessages.begin(), sickoPollSentMessages.end(), message);
 			if (sentMessage != sickoPollSentMessages.end()) {
@@ -1397,7 +1704,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 			IsSickoSocialCommand(message)) {
 			const size_t commandEnd = message.find_first_of(" \t");
 			const std::string incomingCommand = strToLower(message.substr(0, commandEnd));
-			if (incomingCommand == "/tl" || incomingCommand == "/rnd" || incomingCommand == "/selfinf") {
+			if (incomingCommand == "/tl" || incomingCommand == "/rnd" || incomingCommand == "/selfinf" || incomingCommand == "/ai") {
 				HandleSickoSocialCommand(sourcePlayer, message);
 				return; // Hide the raw command; the result is sent as public chat.
 			}
@@ -1437,8 +1744,7 @@ void dChatController_AddChat(ChatController* __this, PlayerControl* sourcePlayer
 			uint32_t colorId = outfit->fields.ColorId;
 			if (wasDead) {
 				local->fields.IsDead = false;
-			}
-		}
+			}		}
 		else {
 			chatText = convert_to_string(newChatText);
 			ChatController_AddChat(__this, sourcePlayer, chatText, censor, method);
@@ -1552,6 +1858,7 @@ void dChatController_Update(ChatController* __this, MethodInfo* method) {
 	if (State.ShowHookLogs) Log.HookDebug("Hook dChatController_Update executed", false);
 	UpdateSickoPolls();
 	UpdateSickoUtilityMessages();
+	UpdateSickoAiMessages();
 	auto freeChatField = __this->fields.freeChatField;
 	int length = freeChatField->fields.textArea->fields.text->fields.m_stringLength;
 
@@ -1597,8 +1904,7 @@ void dChatController_Update(ChatController* __this, MethodInfo* method) {
 				auto outputText = __this->fields.freeChatField->fields.textArea->fields.outputText;
 				TMP_Text_set_color((app::TMP_Text*)outputText, textCol, NULL);
 				auto col = SpriteRenderer_get_color(__this->fields.freeChatField->fields._.background, NULL);
-				bool isHighlighted = col.r == 0.f && col.g == 1.f && col.b == 0.f && col.a == 1.f;
-				if (!isHighlighted)
+				bool isHighlighted = col.r == 0.f && col.g == 1.f && col.b == 0.f && col.a == 1.f;				if (!isHighlighted)
 					SpriteRenderer_set_color(__this->fields.freeChatField->fields._.background, bg, NULL);
 				else {
 					auto green32 = Color32();
@@ -1757,8 +2063,7 @@ void dChatController_Update(ChatController* __this, MethodInfo* method) {
 			"Am I Baby Gronk? Because you can be my Livvy Dunne", "Sup shawty, are you skibidi, because I could use that to my sigma", "Hey shawty, are you skibidi rizz in ohio?",
 			"Yer a rizzard Harry", "Remind me what a work of skibidi rizz looks like" };
 		auto player = !State.SafeMode && State.playerToChatAs.has_value() ? State.playerToChatAs.validate().get_PlayerControl() : *Game::pLocalPlayer;
-		PlayerControl_RpcSendChat(player, convert_to_string(rizzLinesList[randi(0, (int)rizzLinesList.size() - 1)]), NULL);
-		State.MessageSent = true;
+		PlayerControl_RpcSendChat(player, convert_to_string(rizzLinesList[randi(0, (int)rizzLinesList.size() - 1)]), NULL);		State.MessageSent = true;
 	}
 
 	ChatController_Update(__this, method);
@@ -1917,8 +2222,7 @@ void dChatBubble_SetText(ChatBubble* __this, String* chatText, MethodInfo* metho
 			case 6: {
 				fontOpener = "<font=\"Barlow-BoldItalic SDF\">";
 				break;
-			}
-			case 7: {
+			}			case 7: {
 				fontOpener = "<font=\"Barlow-BoldItalic Masked\">";
 				break;
 			}
@@ -2004,7 +2308,7 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 		if (chatText[0] == '/') {
 			size_t commandEnd = chatText.find_first_of(" \t");
 			std::string command = strToLower(chatText.substr(0, commandEnd));
-			if (command == "/tl" || command == "/rnd" || command == "/selfinf") {
+			if (command == "/tl" || command == "/rnd" || command == "/selfinf" || command == "/ai") {
 				HandleSickoSocialCommand(*Game::pLocalPlayer, chatText);
 				return;
 			}
@@ -2077,8 +2381,7 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 					bool isBan = false;
 					if (IsInGame()) {
 						State.rpcQueue.push(new PunishEveryone(isBan));
-					}
-					else if (IsInLobby()) {
+					}					else if (IsInLobby()) {
 						State.lobbyRpcQueue.push(new PunishEveryone(isBan));
 					}
 					return;
