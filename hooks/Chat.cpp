@@ -483,7 +483,7 @@ static bool SickoValidateAiMessage(std::string& answer) {
 		answer.size() < prefix.size() + suffix.size() ||
 		answer.compare(answer.size() - suffix.size(), suffix.size(), suffix) != 0)
 		return false;
-	if (SickoUtf8Length(answer) > 100 || answer.find('\n') != std::string::npos ||
+	if (SickoUtf8Length(answer) > 200 || answer.find('\n') != std::string::npos ||
 		answer.find('\r') != std::string::npos || SickoContainsEmoji(answer))
 		return false;
 	const size_t bodyStart = prefix.size();
