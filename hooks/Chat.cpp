@@ -2464,7 +2464,7 @@ void dChatController_SendFreeChat(ChatController* __this, MethodInfo* method) {
 		if (chatText[0] == '/') {
 			size_t commandEnd = chatText.find_first_of(" \t");
 			std::string command = strToLower(chatText.substr(0, commandEnd));
-			if (command == "/tl" || command == "/rnd" || command == "/selfinf" || command == "/ai") {
+			if (command == "/tl" || command == "/rnd" || command == "/selfinf" || command == "/ai" || command == "/subai") {
 				HandleSickoSocialCommand(*Game::pLocalPlayer, chatText);
 				return;
 			}
