@@ -371,11 +371,6 @@ static bool SickoExtractJsonString(const std::string& json, const std::string& k
 
 // SMAI integration: asynchronous HTTPS requests; the bot token is read only
 // from the local SMAI_BOT_TOKEN environment variable and is never committed.
-#include <atomic>
-#include <cstdlib>
-#include <bcrypt.h>
-#pragma comment(lib, "bcrypt.lib")
-
 struct SickoAiHistoryItem {
 	std::string role;
 	std::string content;
