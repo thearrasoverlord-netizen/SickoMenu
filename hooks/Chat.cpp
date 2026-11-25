@@ -504,8 +504,14 @@ static void StartSickoAi(PlayerControl* actor, const std::string& question) {
 		QueueSickoAiOutput("", "La pregunta supera el límite permitido.", true);
 		return;
 	}
-	const char* tokenValue = std::getenv("SMAI_BOT_TOKEN");
-	const std::string token = tokenValue ? tokenValue : "";
+	char* tokenValue = nullptr;
+	size_t tokenLength = 0;
+	if (_dupenv_s(&tokenValue, &tokenLength, "SMAI_BOT_TOKEN") != 0 || tokenValue == nullptr) {
+		QueueSickoAiOutput("", "Falta SMAI_BOT_TOKEN en las variables de entorno.", true);
+		return;
+	}
+	const std::string token(tokenValue);
+	free(tokenValue);
 	if (token.empty()) {
 		QueueSickoAiOutput("", "Falta SMAI_BOT_TOKEN en las variables de entorno.", true);
 		return;
@@ -1112,7 +1118,8 @@ float calculateChatNewlineSize(std::string playerName) {
 	size_t i = 0;
 
 	while (i < playerName.size()) {
-		// Handle <br>		if (i + 3 < playerName.size() && playerName.compare(i, 4, "<br>") == 0) {
+		// Handle <br>
+		if (i + 3 < playerName.size() && playerName.compare(i, 4, "<br>") == 0) {
 			result += maxSize;
 			maxSize = 100.f;
 			i += 4;
