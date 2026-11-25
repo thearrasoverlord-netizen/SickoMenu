@@ -2,7 +2,7 @@
 
 ## Comando
 
-\`/ai <pregunta>\`
+`/ai <pregunta>`
 
 TheSickMenu envía la pregunta al backend SMAI mediante HTTPS. La petición es asíncrona: el juego no se bloquea mientras Groq genera la respuesta.
 
@@ -18,13 +18,13 @@ Si SMAI bloquea una respuesta (HTTP 422), el mod muestra un aviso local y no pub
 
 El mod lee el secreto desde la variable de entorno de Windows:
 
-\`SMAI_BOT_TOKEN\`
+`SMAI_BOT_TOKEN`
 
-Su valor debe ser exactamente el mismo que la variable \`BOT_API_TOKEN\` configurada en Render.
+Su valor debe ser exactamente el mismo que la variable `BOT_API_TOKEN` configurada en Render.
 
 1. Abre **Editar las variables de entorno de tu cuenta** desde el menú Inicio.
-2. En **Variables de usuario**, crea \`SMAI_BOT_TOKEN\`.
-3. Pega el valor de \`BOT_API_TOKEN\` de Render como valor de la variable.
+2. En **Variables de usuario**, crea `SMAI_BOT_TOKEN`.
+3. Pega el valor de `BOT_API_TOKEN` de Render como valor de la variable.
 4. Guarda los cambios, cierra completamente Steam/Among Us y vuelve a abrirlos para que hereden la variable.
 
 No pongas el token en el código fuente, en GitHub, en capturas ni en mensajes. No compartas el valor conmigo.
@@ -41,4 +41,4 @@ No pongas el token en el código fuente, en GitHub, en capturas ni en mensajes. 
 
 ## Estado
 
-La integración está en la rama \`feature/thesickmenu-v2-chat-commands\`. No se ha fusionado en \`main\`.
+La integración está en la rama `feature/thesickmenu-v2-chat-commands`. No se ha fusionado en `main`.
