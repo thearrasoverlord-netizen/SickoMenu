@@ -562,7 +562,7 @@ static void StartSickoAi(PlayerControl* actor, const std::string& question) {
 			HINTERNET session = WinHttpOpen(L"TheSickMenu-SMAI/2.0",
 				WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
 				WINHTTP_NO_PROXY_BYPASS, 0);
-			if (session) WinHttpSetTimeouts(session, 10000, 10000, 15000, 45000);
+			if (session) WinHttpSetTimeouts(session, 10000, 10000, 15000, 120000);
 			if (!session) {
 				QueueSickoAiOutput(friendCode, "No se pudo iniciar la conexión con SMAI.", true);
 				return;
