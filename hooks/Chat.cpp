@@ -91,7 +91,7 @@ static bool IsSickoSocialCommand(const std::string& message) {
 	size_t end = message.find_first_of(" \t");
 	std::string command = strToLower(message.substr(0, end));
 	static const std::set<std::string> commands = {
-		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball", "/tl", "/rnd", "/selfinf", "/ai"
+		"/startpoll", "/poll", "/cancelpoll", "/clearpolls", "/pollqueue", "/8ball", "/tl", "/rnd", "/selfinf", "/ai", "/subai"
 	};
 	return commands.count(command) != 0;
 }
@@ -940,6 +940,145 @@ static std::string GenerateSicko8BallAnswer() {
 	return answers[distribution(rng)];
 }
 
+static void StartSickoAdminMemoryCommand(PlayerControl* actor, const std::string& rawArgs) {
+	if (!actor) { QueueSickoUtilityMessage("No se pudo identificar al administrador."); return; }
+
+	char* botValue = nullptr; size_t botLength = 0;
+	char* adminValue = nullptr; size_t adminLength = 0;
+	_dupenv_s(&botValue, &botLength, "SMAI_BOT_TOKEN");
+	_dupenv_s(&adminValue, &adminLength, "SMAI_ADMIN_TOKEN");
+	std::string botToken = botValue ? botValue : "";
+	std::string adminToken = adminValue ? adminValue : "";
+	if (botValue) free(botValue);
+	if (adminValue) free(adminValue);
+	if (botToken.empty() || adminToken.empty()) {
+		QueueSickoUtilityMessage("Falta SMAI_BOT_TOKEN o SMAI_ADMIN_TOKEN en el equipo administrador.");
+		return;
+	}
+
+	std::istringstream input(rawArgs);
+	std::string action;
+	input >> action;
+	action = strToLower(action);
+	std::string targetFriendCode = SickoGetFriendCode(actor);
+	std::string memoryId, content;
+	bool confirm = false;
+	std::string operation;
+
+	if (action == "addmem") {
+		operation = "add";
+		std::string quoted;
+		std::getline(input >> std::ws, quoted);
+		if (quoted.size() < 2 || quoted.front() != '"') {
+			QueueSickoUtilityMessage("Uso: /subai addmem \"Memoria nueva\" <id>"); return;
+		}
+		size_t quoteEnd = quoted.find('"', 1);
+		if (quoteEnd == std::string::npos) {
+			QueueSickoUtilityMessage("La memoria debe ir entre comillas."); return;
+		}
+		content = quoted.substr(1, quoteEnd - 1);
+		std::istringstream tail(quoted.substr(quoteEnd + 1));
+		tail >> memoryId;
+		std::string extra;
+		if (memoryId.empty() || (tail >> extra)) {
+			QueueSickoUtilityMessage("Uso: /subai addmem \"Memoria nueva\" <id>"); return;
+		}
+	}
+	else if (action == "delmem") {
+		std::string first, second;
+		input >> first >> second;
+		if (strToLower(first) == "all") {
+			if (strToLower(second) != "confirm") {
+				QueueSickoUtilityMessage("Confirma con /subai delmem all confirm."); return;
+			}
+			std::string extra;
+			if (input >> extra) { QueueSickoUtilityMessage("Uso: /subai delmem all confirm"); return; }
+			operation = "delete_all"; confirm = true;
+		}
+		else {
+			operation = "delete"; memoryId = first;
+			std::string extra;
+			if (memoryId.empty() || (input >> extra)) {
+				QueueSickoUtilityMessage("Uso: /subai delmem <id>"); return;
+			}
+		}
+	}
+	else if (action == "getmems") {
+		std::string first, second, extra;
+		input >> first >> second;
+		if (first.empty()) operation = "list";
+		else if (second.empty()) { operation = "get"; memoryId = first; }
+		else {
+			targetFriendCode = first;
+			memoryId = second;
+			operation = "get";
+			if (input >> extra) { QueueSickoUtilityMessage("Uso: /subai getmems <friend code> <id>"); return; }
+		}
+	}
+	else {
+		QueueSickoUtilityMessage("Uso: /subai addmem | delmem | getmems"); return;
+	}
+
+	std::string targetPlayerId = SickoHmacPlayerId(targetFriendCode, botToken);
+	if (operation != "delete_all" && targetPlayerId.empty()) {
+		QueueSickoUtilityMessage("No se pudo identificar al jugador de destino."); return;
+	}
+	std::string body = "{\"operation\":" + SickoJsonString(operation);
+	if (operation != "delete_all") body += ",\"player_id\":" + SickoJsonString(targetPlayerId);
+	if (!memoryId.empty()) body += ",\"memory_id\":" + SickoJsonString(memoryId);
+	if (!content.empty()) body += ",\"content\":" + SickoJsonString(content);
+	if (confirm) body += ",\"confirm\":true";
+	body += "}";
+
+	std::thread([botToken, adminToken, body]() {
+		HINTERNET session = WinHttpOpen(L"TheSickMenu-SMAI-Admin/2.0",
+			WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+			WINHTTP_NO_PROXY_BYPASS, 0);
+		if (session) WinHttpSetTimeouts(session, 10000, 10000, 15000, 30000);
+		if (!session) { QueueSickoUtilityMessage("No se pudo conectar con SMAI."); return; }
+		HINTERNET connection = WinHttpConnect(session, L"smai-backend-88so.onrender.com",
+			INTERNET_DEFAULT_HTTPS_PORT, 0);
+		HINTERNET request = connection ? WinHttpOpenRequest(connection, L"POST", L"/admin/memories",
+			nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
+		std::string response;
+		bool ok = request != nullptr;
+		std::string headers = "Content-Type: application/json\r\nX-Bot-Token: " + botToken +
+			"\r\nX-Admin-Token: " + adminToken + "\r\n";
+		std::wstring wideHeaders(headers.begin(), headers.end());
+		if (ok) ok = WinHttpSendRequest(request, wideHeaders.c_str(), static_cast<DWORD>(-1L),
+			const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
+			static_cast<DWORD>(body.size()), 0) && WinHttpReceiveResponse(request, nullptr);
+		DWORD status = 0, statusSize = sizeof(status);
+		if (ok) ok = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+			WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX) != FALSE;
+		if (ok) {
+			DWORD available = 0;
+			do {
+				available = 0;
+				if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+				if (response.size() + available > 12000) { ok = false; break; }
+				std::string chunk(available, '\0'); DWORD read = 0;
+				if (!WinHttpReadData(request, chunk.data(), available, &read)) { ok = false; break; }
+				chunk.resize(read); response += chunk;
+			} while (available > 0);
+		}
+		if (request) WinHttpCloseHandle(request);
+		if (connection) WinHttpCloseHandle(connection);
+		WinHttpCloseHandle(session);
+		if (!ok) { QueueSickoUtilityMessage("Error de conexión al administrar memorias."); return; }
+		std::string message;
+		if (SickoExtractJsonString(response, "message", message)) {
+			QueueSickoUtilityMessage(message);
+			return;
+		}
+		if (status == 403) QueueSickoUtilityMessage("Acceso denegado: solo el administrador.");
+		else if (status == 503) QueueSickoUtilityMessage("Configura SUBAI_ADMIN_TOKEN en Render.");
+		else if (status == 404) QueueSickoUtilityMessage("No se encontró esa memoria.");
+		else if (status == 409) QueueSickoUtilityMessage("Ese ID ya está ocupado.");
+		else QueueSickoUtilityMessage(std::format("Error de SMAI: HTTP {}.", status));
+	}).detach();
+}
+
 static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& message) {
 	if (!IsSickoSocialCommand(message)) return false;
 
@@ -948,6 +1087,10 @@ static bool HandleSickoSocialCommand(PlayerControl* actor, const std::string& me
 	const std::string rawArgs = spacePos == std::string::npos ? "" : trim(message.substr(spacePos + 1));
 	if (command == "/tl" || command == "/rnd" || command == "/selfinf")
 		return HandleSickoUtilityCommand(actor, command, rawArgs);
+	if (command == "/subai") {
+		StartSickoAdminMemoryCommand(actor, rawArgs);
+		return true;
+	}
 	if (command == "/ai") {
 		if (rawArgs.empty()) QueueSickoAiOutput("", "Uso: /ai <pregunta>", true);
 		else StartSickoAi(actor, rawArgs);
