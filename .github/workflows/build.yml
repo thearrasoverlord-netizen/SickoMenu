@@ -2,11 +2,15 @@ name: Build Project
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/thesickmenu-v2-chat-commands
+  pull_request:
+    branches:
+      - feature/thesickmenu-v2-chat-commands
   release:
     types: [published]
-  #push:
-    #branches: [ "main" ]
-  
+
 jobs:
   build:
     name: Build ${{ matrix.name }}
@@ -39,8 +43,8 @@ jobs:
       - name: Package
         shell: cmd
         run: |
-          move /y "${{ matrix.path }}\SickoMenu.dll" SickoMenu.dll
-          move /y "${{ matrix.path }}_Version\version.dll" version.dll
+          move /y "${{ matrix.path }}\\SickoMenu.dll" SickoMenu.dll
+          move /y "${{ matrix.path }}_Version\\version.dll" version.dll
           tar -caf "${{ matrix.name }}.zip" SickoMenu.dll version.dll LICENSE
 
       - name: Upload artifact
@@ -60,7 +64,7 @@ jobs:
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
-      
+
       - name: Automatic Releases
         uses: softprops/action-gh-release@v3
         with:
