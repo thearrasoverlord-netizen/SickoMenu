@@ -478,18 +478,12 @@ static size_t SickoUtf8Length(const std::string& value) {
 
 static bool SickoValidateAiMessage(std::string& answer) {
 	const std::string prefix = "(AI): ";
-	const std::string suffix = " - Comando: /ai";
-	if (answer.rfind(prefix, 0) != 0 ||
-		answer.size() < prefix.size() + suffix.size() ||
-		answer.compare(answer.size() - suffix.size(), suffix.size(), suffix) != 0)
-		return false;
+	if (answer.rfind(prefix, 0) != 0) return false;
 	if (SickoUtf8Length(answer) > 200 || answer.find('\n') != std::string::npos ||
 		answer.find('\r') != std::string::npos || SickoContainsEmoji(answer))
 		return false;
-	const size_t bodyStart = prefix.size();
-	const size_t bodyLength = answer.size() - prefix.size() - suffix.size();
-	if (bodyLength == 0) return false;
-	std::string body = answer.substr(bodyStart, bodyLength);
+	const std::string body = answer.substr(prefix.size());
+	if (body.empty() || SickoUtf8Length(body) > 80) return false;
 	if (body.find('<') != std::string::npos || body.find('>') != std::string::npos)
 		return false;
 	return true;
@@ -666,9 +660,7 @@ static void UpdateSickoAiMessages() {
 	std::string answer = output.message;
 	if (!SickoValidateAiMessage(answer)) return;
 	const std::string prefix = "(AI): ";
-	const std::string suffix = " - Comando: /ai";
-	const std::string assistantText = answer.substr(prefix.size(),
-		answer.size() - prefix.size() - suffix.size());
+	const std::string assistantText = answer.substr(prefix.size());
 	auto& history = sickoAiHistory[output.playerKey];
 	history.push_back({ "assistant", assistantText });
 	while (history.size() > 8) history.pop_front();
